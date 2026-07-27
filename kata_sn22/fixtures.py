@@ -43,7 +43,7 @@ QUERY_SOURCE_VERSION = 1
 #: ends
 #: up separated by latency instead — which would make it a ladder about speed wearing a quality
 #: label. A test below asserts the ladder separates on quality with cost held equal.
-_DOCUMENTS = (
+SNAPSHOT_DOCUMENTS = (
     SnapshotDocument("doc-emissions-1", "Bittensor emissions schedule explained",
                      "Emissions are distributed per subnet according to validator weights.",
                      ("bittensor", "subnet", "emissions", "schedule")),
@@ -113,7 +113,7 @@ def calibration_snapshot(manifest: QueryManifest) -> SnapshotManifest:
     relevant = {task_id: _RELEVANT_BY_QUERY.get(query, ())
                 for task_id, query, _search_type, _ai_mode in manifest.entries}
     return SnapshotManifest(snapshot_id=f"snap-{manifest.round_seed}",
-                            documents=_DOCUMENTS, relevant_by_task=relevant)
+                            documents=SNAPSHOT_DOCUMENTS, relevant_by_task=relevant)
 
 
 def tasks_for(manifest: QueryManifest, *, limits: Limits | None = None) -> list[Task]:

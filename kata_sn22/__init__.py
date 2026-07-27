@@ -5,14 +5,11 @@ Two layers live here, and importing one must not drag in the other:
 * **The evaluation protocol** (``protocol``, ``manifests``, ``scoring``, ``fake_provider``,
   ``fixtures``) — SN22-2. Self-contained, offline, and independent of the Kata core, so the contract
   can be reviewed and calibrated before any lane exists to run it.
-* **The plugin** (``plugin``) — the adapter the core resolves by evaluator id. Still the
-  pre-existing skeleton, written against a Kata core API (``kata.packages.registry``) that no
-  longer exists;
-  SN22-3 replaces it.
+* **The plugin** (``plugin``) — the adapter the core resolves by evaluator id, rewritten in SN22-3
+  against the current ``kata.plugins`` ABI on top of that protocol.
 
-The plugin is therefore imported LAZILY. Doing it eagerly would make the whole package unimportable
-on the current core, which is exactly what it did before: every test module in this repo failed to
-collect because ``import kata_sn22`` reached for a module that is gone.
+The plugin is still imported LAZILY, so the protocol layer stays importable on a host that has no
+Kata core installed at all — which is what makes it reviewable and calibratable on its own.
 """
 from __future__ import annotations
 
