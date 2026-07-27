@@ -23,6 +23,7 @@ but within a world, results are reproducible and auditable, which is what the pl
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,8 +38,8 @@ from kata.plugins.contract import (
     SubnetPlugin,
 )
 
-from kata_sn22 import fixtures
-from kata_sn22.fake_provider import FakeRelay, RelayDenied
+from kata_sn22 import fixtures, relay_server, sandbox
+from kata_sn22.gateway import GatewayDenied, Sn22Gateway
 from kata_sn22.manifests import (
     QueryManifest,
     SnapshotManifest,
@@ -118,6 +119,9 @@ class Sn22RawRun:
     agent_path: str
     attempts: tuple[TaskAttempt, ...]
     usage: UsageManifest
+    #: Whether the submission ran under the sandbox. Recorded rather than assumed: a challenge run
+    #: unconfined during calibration must never be mistaken afterwards for one that was isolated.
+    isolated: bool = False
 
 
 class Sn22AgentError(Exception):
@@ -131,34 +135,68 @@ def _monotonic() -> float:
     return time.monotonic()
 
 
-def _run_agent_once(agent_py: Path, task: Task, *, workdir: Path,
-                    timeout_seconds: int) -> tuple[bytes, ErrorClass | None]:
-    """Execute one submission against one task. Returns (stdout, classified failure or None).
+#: Set in production. When the sandbox is unavailable the run is an ERROR rather than a quieter,
+#: unconfined execution — plan §6.1 is not a preference.
+REQUIRE_SANDBOX_ENV = "KATA_SN22_REQUIRE_SANDBOX"
 
-    The agent gets its task as JSON on stdin and answers on stdout. Deliberately narrow:
 
-    * **no candidate-selected command** — the interpreter and the entry file are both fixed here, so
-      a submission cannot choose what gets executed;
-    * **a fresh, tiny environment** — nothing ambient reaches the agent, and in particular no
-      provider credential exists to leak. It receives a relay capability instead;
+def _sandbox_required() -> bool:
+    return os.environ.get(REQUIRE_SANDBOX_ENV, "").strip().lower() not in ("", "0", "false", "no")
+
+
+def _execute(agent_py: Path, task: Task, *, workdir: Path) -> tuple[bytes, ErrorClass | None]:
+    """Run one submission against one task. Returns (stdout, classified failure or None).
+
+    Deliberately narrow, however it runs:
+
+    * **no candidate-selected command** — the interpreter and the entry file are both fixed, so a
+      submission cannot choose what gets executed;
+    * **a constructed environment** — built from nothing rather than filtered, so no provider
+      credential exists to leak. The agent gets a relay capability instead;
     * **output is read under a cap** and never evaluated.
 
-    This is the plain-subprocess form. SN22-4 replaces it with the isolated sandbox and the real
-    relay; the classification contract here is what that replacement must preserve.
+    Preferring the sandbox and falling back is a deliberate two-mode design, not a soft failure.
+    Calibration (§5.5) needs thirty-plus paired challenges on hosts that may not offer user
+    namespaces; production sets ``KATA_SN22_REQUIRE_SANDBOX`` and gets a hard refusal instead. What
+    is never allowed is the two being indistinguishable afterwards, so the mode is recorded on the
+    raw run and travels into the challenge result.
     """
-    payload = json.dumps(task.as_input()).encode("utf-8")
-    env = {
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "HOME": str(workdir),
-        "SN22_PROTOCOL_VERSION": str(PROTOCOL_VERSION),
-        "SN22_RELAY_ENDPOINT": task.relay_endpoint,
-        "SN22_RELAY_CAPABILITY": task.relay_capability,
-    }
+    limits = sandbox.SandboxLimits(max_wall_seconds=task.limits.max_wall_seconds,
+                                   max_output_bytes=MAX_OUTPUT_BYTES)
+    task_input = task.as_input()
+
+    if sandbox.available():
+        try:
+            run = sandbox.run_candidate(agent_py, task_input, workdir=workdir,
+                                        relay_endpoint=task.relay_endpoint,
+                                        capability=task.relay_capability, limits=limits)
+        except sandbox.SandboxUnavailable:
+            # The sandbox could not start, so the submission was never executed. That is a SHARED
+            # infrastructure fault, not a candidate crash — scoring it against whoever happened to
+            # be running is exactly what §5.4 forbids. Fall through to the two-mode decision below.
+            if _sandbox_required():
+                raise
+        else:
+            if run.timed_out:
+                return b"", ErrorClass.TIMEOUT
+            if run.truncated:
+                return b"", ErrorClass.EXCESS_OUTPUT
+            if run.returncode != 0 and not run.stdout:
+                return b"", ErrorClass.CRASHED
+            return run.stdout, None
+
+    if _sandbox_required():
+        raise Sn22AgentError(
+            f"{sandbox.BWRAP} is unusable and {REQUIRE_SANDBOX_ENV} is set; refusing to run an "
+            f"untrusted submission unconfined")
+
+    env = sandbox.candidate_env(task_input=task_input, relay_endpoint=task.relay_endpoint,
+                                capability=task.relay_capability, workdir=str(workdir))
     try:
         completed = subprocess.run(
             ["/usr/bin/python3", str(agent_py)],
-            input=payload, capture_output=True, cwd=str(workdir), env=env,
-            timeout=timeout_seconds, check=False,
+            input=json.dumps(task_input).encode("utf-8"), capture_output=True,
+            cwd=str(workdir), env=env, timeout=task.limits.max_wall_seconds, check=False,
         )
     except subprocess.TimeoutExpired:
         return b"", ErrorClass.TIMEOUT
@@ -224,54 +262,84 @@ class Sn22DesearchPlugin(SubnetPlugin):
     # ---- running a contestant -------------------------------------------------------------------
     def run_candidate(self, *, agent_path: str, problems: Sn22Problems,
                       context: RunContext) -> Sn22RawRun:
-        """Run one submission over every task, against the sealed relay."""
+        """Run one submission over every task, against the trusted gateway behind a unix relay.
+
+        The gateway holds whatever credential the round needs and the candidate holds a capability;
+        the relay socket is the only thing that crosses between them. The socket lives inside the
+        run directory, which is the one writable path the sandbox has — a unix socket is a
+        filesystem object, so it survives ``--unshare-net`` and the sandbox keeps no network at all.
+
+        Isolation is REQUIRED where it is available and refused where it is not. On a host without
+        `bwrap` the run falls back to a plain subprocess with the same constructed environment, and
+        says so in the raw run: that is the calibration path, and a challenge that used it must not
+        be mistaken for one that ran confined. Production sets ``KATA_SN22_REQUIRE_SANDBOX=1``, and
+        then an unavailable sandbox is an error rather than a quieter run.
+        """
         agent_py = Path(agent_path).expanduser().resolve() / "agent.py"
         if not agent_py.is_file():
             raise Sn22AgentError(f"submission has no agent.py at {agent_py}")
 
         variant = context.label or "candidate"
-        relay = FakeRelay(snapshot=problems.snapshot, challenge_id=problems.challenge_id,
-                          lane_id=self.pack)
-        workdir = Path(context.output_root).expanduser().resolve() / f"sn22-{variant}"
-        workdir.mkdir(parents=True, exist_ok=True)
+        gateway = Sn22Gateway(snapshot=problems.snapshot, challenge_id=problems.challenge_id,
+                              lane_id=self.pack,
+                              reservation_calls=self._reservation_calls(problems))
+        workdir = sandbox.fresh_workdir(Path(context.output_root).expanduser().resolve(),
+                                        f"sn22-{variant}")
+        relay_server.install_client(workdir)
+        # Staged once per contestant, then mounted read-only: every task runs the SAME bytes, and a
+        # submission cannot rewrite its own entry point between tasks.
+        staged_agent = sandbox.stage_bundle(agent_py.parent, workdir)
 
         attempts: list[TaskAttempt] = []
-        for index, task in enumerate(problems.tasks, start=1):
-            capability = relay.grant(variant=variant, task_id=task.task_id,
-                                     max_calls=task.limits.max_provider_calls)
-            issued = Task(
-                task_id=task.task_id, query=task.query, search_type=task.search_type,
-                result_type=task.result_type, ai_mode=task.ai_mode,
-                relay_endpoint=f"sn22-relay://{problems.challenge_id}",
-                relay_capability=capability.token, limits=task.limits,
-            )
-            started = _monotonic()
-            try:
-                raw, failure = _run_agent_once(agent_py, issued, workdir=workdir,
-                                               timeout_seconds=task.limits.max_wall_seconds)
-            except RelayDenied:
-                # The relay refused: shared infrastructure, not the candidate's doing.
-                raw, failure = b"", ErrorClass.PROVIDER_UNAVAILABLE
-            observed = _monotonic() - started
-
-            if failure is not None:
-                attempts.append(TaskAttempt(task=task, error=failure, observed_seconds=observed))
-            else:
+        with relay_server.RelayServer(gateway, workdir) as relay:
+            for index, task in enumerate(problems.tasks, start=1):
+                capability = gateway.issue(variant=variant, task_id=task.task_id,
+                                           max_calls=task.limits.max_provider_calls)
+                issued = Task(
+                    task_id=task.task_id, query=task.query, search_type=task.search_type,
+                    result_type=task.result_type, ai_mode=task.ai_mode,
+                    relay_endpoint=relay.endpoint, relay_capability=capability.token,
+                    limits=task.limits,
+                )
+                started = _monotonic()
                 try:
-                    output = parse_task_output(raw, task=task)
-                    attempts.append(TaskAttempt(task=task, output=output,
-                                                observed_seconds=observed))
-                except ProtocolError as exc:
-                    attempts.append(TaskAttempt(task=task, error=exc.error_class,
-                                                observed_seconds=observed))
-            if context.progress is not None:
-                context.progress(ProgressUpdate(
-                    variant=variant, done=index, total=len(problems.tasks), state="scoring",
-                    metrics={"usable": sum(1 for a in attempts if a.usable)}))
+                    raw, failure = _execute(staged_agent, issued, workdir=workdir)
+                except GatewayDenied:
+                    # The gateway refused outright: shared infrastructure, not the
+                    # candidate's doing.
+                    raw, failure = b"", ErrorClass.PROVIDER_UNAVAILABLE
+                observed = _monotonic() - started
 
-        relay.close()   # capabilities die with the challenge; no spending after scoring
+                if failure is not None:
+                    attempts.append(TaskAttempt(task=task, error=failure,
+                                                observed_seconds=observed))
+                else:
+                    try:
+                        output = parse_task_output(raw, task=task)
+                        attempts.append(TaskAttempt(task=task, output=output,
+                                                    observed_seconds=observed))
+                    except ProtocolError as exc:
+                        attempts.append(TaskAttempt(task=task, error=exc.error_class,
+                                                    observed_seconds=observed))
+                if context.progress is not None:
+                    context.progress(ProgressUpdate(
+                        variant=variant, done=index, total=len(problems.tasks), state="scoring",
+                        metrics={"usable": sum(1 for a in attempts if a.usable)}))
+        # The context manager closed the gateway: capabilities die with the challenge, so nothing
+        # spends after scoring has begun.
         return Sn22RawRun(variant=variant, agent_path=str(agent_path),
-                          attempts=tuple(attempts), usage=relay.usage_manifest())
+                          attempts=tuple(attempts), usage=gateway.usage_manifest(),
+                          isolated=sandbox.available())
+
+    @staticmethod
+    def _reservation_calls(problems: Sn22Problems) -> int:
+        """The gateway's HARD ceiling for this challenge: every task's full quota, once.
+
+        Per-task quotas bound one task. Only this bounds the challenge, and the challenge is what
+        was reserved against the lane's daily budget — so it is derived from the same tasks the
+        runner is about to issue rather than from a default that could drift from them.
+        """
+        return sum(task.limits.max_provider_calls for task in problems.tasks) or 1
 
     # ---- scoring and ranking --------------------------------------------------------------------
     def score(self, raw: Sn22RawRun, problems: Sn22Problems) -> ScoreCard:

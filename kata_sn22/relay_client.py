@@ -1,0 +1,143 @@
+"""The relay client a submission imports, and the trusted transport behind it (SN22-7).
+
+A submission has to be able to search. It also has no network namespace, no provider key, and a
+static screen that rejects `import socket`, `import requests` and `urllib.request` outright. Those
+two facts look contradictory until you notice what resolves them: **the candidate does not implement
+the transport at all.** The lane writes this module into the run directory and the agent imports it.
+
+That inversion buys three things that a "call this HTTP endpoint" contract does not:
+
+* **The ban can stay absolute.** No submission has a legitimate reason to open a socket, so the
+  screen never has to distinguish a relay call from an exfiltration attempt — a distinction it could
+  not make reliably anyway, since both are `socket.connect`.
+* **There is one transport implementation, and it is reviewed.** Framing, size limits, timeouts and
+  error classification are the lane's, identical for every contestant. A per-agent HTTP client would
+  make "the relay returned the same content to both sides" depend on two strangers' retry loops.
+* **It works under `--unshare-net`.** A unix socket is a filesystem object, so it survives into a
+  sandbox with no network at all. An HTTP relay would require giving candidates a network namespace,
+  which is the thing the sandbox exists to remove.
+
+The wire protocol is deliberately dull: one JSON object per line, request then response, on an
+AF_UNIX stream. Bounded on both sides — an unbounded read from an untrusted peer is a memory
+exhaustion, and an unbounded read from the lane is one the candidate can trigger.
+"""
+from __future__ import annotations
+
+import json
+import os
+import socket
+
+#: Wire framing. One newline-terminated JSON object each way, so a partial write is detectable
+#: rather than being reassembled into something plausible.
+ENCODING = "utf-8"
+#: Ceilings on ONE message. Applied by both ends: the server refuses an oversized request before
+#: parsing it, and the client refuses an oversized response before buffering it.
+MAX_REQUEST_BYTES = 64 * 1024
+MAX_RESPONSE_BYTES = 1024 * 1024
+DEFAULT_TIMEOUT_SECONDS = 30.0
+
+#: Where the lane tells the agent to find the socket, and the capability to present.
+ENDPOINT_ENV = "SN22_RELAY_ENDPOINT"
+CAPABILITY_ENV = "SN22_RELAY_CAPABILITY"
+#: The scheme the endpoint carries. A path, not a URL: there is nothing to resolve and nothing to
+#: route, which is the point.
+ENDPOINT_SCHEME = "sn22-relay+unix://"
+
+
+class RelayError(Exception):
+    """The relay refused, was unreachable, or answered unintelligibly.
+
+    ONE class for all three on purpose. An agent that could distinguish "quota exhausted" from
+    "unknown capability" from "expired" could probe the lane's state; an agent that cannot is left
+    with the only useful response to any of them, which is to answer with what it already has.
+    """
+
+
+def endpoint_path(endpoint: str | None = None) -> str:
+    """The socket path from an endpoint string, or from the environment."""
+    raw = endpoint if endpoint is not None else os.environ.get(ENDPOINT_ENV, "")
+    raw = (raw or "").strip()
+    if raw.startswith(ENDPOINT_SCHEME):
+        return raw[len(ENDPOINT_SCHEME):]
+    return raw
+
+
+def _request(payload: dict, *, endpoint: str | None = None,
+             timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
+    path = endpoint_path(endpoint)
+    if not path:
+        raise RelayError("no relay endpoint was provided")
+    body = json.dumps(payload, separators=(",", ":")).encode(ENCODING) + b"\n"
+    if len(body) > MAX_REQUEST_BYTES:
+        raise RelayError("request exceeds the relay size limit")
+
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(timeout)
+    try:
+        try:
+            connection.connect(path)
+        except OSError as exc:
+            raise RelayError(f"relay is unreachable: {exc}") from exc
+        connection.sendall(body)
+        # Half-close so the server sees EOF on the request without waiting for a timeout. The read
+        # direction stays open for the answer.
+        try:
+            connection.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            try:
+                chunk = connection.recv(65536)
+            except OSError as exc:
+                raise RelayError(f"relay read failed: {exc}") from exc
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_RESPONSE_BYTES:
+                raise RelayError("relay response exceeds the size limit")
+            chunks.append(chunk)
+    finally:
+        connection.close()
+
+    try:
+        document = json.loads(b"".join(chunks).decode(ENCODING))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RelayError(f"relay answered with something that is not JSON: {exc}") from exc
+    if not isinstance(document, dict):
+        raise RelayError("relay answer is not a JSON object")
+    if not document.get("ok"):
+        raise RelayError(str(document.get("error") or "relay refused the request"))
+    return document
+
+
+def search(query: str, *, limit: int = 10, capability: str | None = None,
+           endpoint: str | None = None, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> list[dict]:
+    """Search the round's sealed corpus. Returns a list of ``{doc_id, title, snippet}``.
+
+    The capability defaults to the one the lane put in the environment, so the common call is
+    ``sn22_relay.search("my query", limit=5)`` and an agent never handles a token at all.
+    """
+    token = capability if capability is not None else os.environ.get(CAPABILITY_ENV, "")
+    document = _request({"op": "search", "capability": token, "query": query, "limit": int(limit)},
+                        endpoint=endpoint, timeout=timeout)
+    results = document.get("results")
+    return [item for item in (results or []) if isinstance(item, dict) and item.get("doc_id")]
+
+
+def quota(capability: str | None = None, *, endpoint: str | None = None,
+          timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
+    """How many calls this capability has left. Free, and it does not consume one.
+
+    Exposed because an agent that cannot see its own quota either wastes it or hoards it, and both
+    make the cost signal measure planning rather than search quality.
+    """
+    token = capability if capability is not None else os.environ.get(CAPABILITY_ENV, "")
+    document = _request({"op": "quota", "capability": token}, endpoint=endpoint, timeout=timeout)
+    return {"used": int(document.get("used", 0)), "max_calls": int(document.get("max_calls", 0)),
+            "remaining": int(document.get("remaining", 0))}
+
+
+__all__ = ["CAPABILITY_ENV", "ENDPOINT_ENV", "ENDPOINT_SCHEME", "MAX_REQUEST_BYTES",
+           "MAX_RESPONSE_BYTES", "RelayError", "endpoint_path", "quota", "search"]

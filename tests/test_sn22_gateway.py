@@ -88,8 +88,12 @@ def test_the_constructed_environment_contains_no_credential():
     for name in PROVIDER_CREDENTIAL_NAMES:
         assert name not in env
     for name in ("KATA_TARGET_TOKEN", "KATA_WEBHOOK_SECRET", "KATA_ROOM_AUTH_SECRET",
-                 "PYTHONPATH", "SSH_AUTH_SOCK"):
+                 "SSH_AUTH_SOCK"):
         assert name not in env
+    # PYTHONPATH IS set, and to exactly one lane-owned directory: the run directory holding the
+    # relay client. An INHERITED PYTHONPATH would be an import path into the lane's own code; this
+    # one contains a single reviewed file the lane put there itself.
+    assert env["PYTHONPATH"] == "/tmp/w"
 
 
 def test_the_environment_is_constructed_not_filtered(monkeypatch):
@@ -99,8 +103,9 @@ def test_the_environment_is_constructed_not_filtered(monkeypatch):
     env = sandbox.candidate_env(task_input={}, relay_endpoint="r", capability="c", workdir="/tmp/w")
     assert "A_BRAND_NEW_PROVIDER_KEY" not in env
     assert "sk-secret-value-nobody-denylisted" not in json.dumps(env)
-    assert set(env) == {"PATH", "HOME", "TMPDIR", "LC_ALL", "SN22_PROTOCOL_VERSION",
-                        "SN22_TASK_ID", "SN22_RELAY_ENDPOINT", "SN22_RELAY_CAPABILITY"}
+    assert set(env) == {"PATH", "HOME", "TMPDIR", "LC_ALL", "PYTHONPATH",
+                        "PYTHONDONTWRITEBYTECODE", "SN22_PROTOCOL_VERSION", "SN22_TASK_ID",
+                        "SN22_RELAY_ENDPOINT", "SN22_RELAY_CAPABILITY"}
 
 
 def test_an_agent_that_dumps_its_environment_learns_nothing(tmp_path, monkeypatch):

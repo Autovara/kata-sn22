@@ -133,8 +133,13 @@ class Sn22Gateway:
         """End the challenge. Every capability dies with it, so nothing spends after scoring."""
         self._closed = True
 
-    def _authorize(self, token: str) -> Capability:
-        """Validate a presented token. Every refusal is deliberately uninformative."""
+    def _authorize(self, token: str, *, check_quota: bool = True) -> Capability:
+        """Validate a presented token. Every refusal is deliberately uninformative.
+
+        ``check_quota=False`` is for the free ``quota`` read, which must keep working precisely when
+        the quota has run out — refusing to report an exhausted quota would make the one answer an
+        agent needs the one it cannot get.
+        """
         if self._closed:
             raise GatewayDenied("the challenge is closed")
         if not isinstance(token, str) or not CAPABILITY_RE.fullmatch(token):
@@ -146,6 +151,8 @@ class Sn22Gateway:
             raise GatewayDenied("malformed capability")
         if self._now() > capability.expires_at:
             raise GatewayDenied("capability expired")
+        if not check_quota:
+            return capability
         if self._calls[token] >= capability.max_calls:
             raise GatewayDenied("call quota exhausted")
         if self._served >= self.reservation_calls:
@@ -189,6 +196,17 @@ class Sn22Gateway:
         scored.sort(key=lambda row: (-row[0], row[1]))
         return [{"doc_id": r.doc_id, "title": redact(r.title), "snippet": redact(r.snippet)}
                 for _o, _d, r in scored[:limit]]
+
+    def quota(self, token: str) -> tuple[int, int]:
+        """``(used, max_calls)`` for a live capability. Free, and it consumes nothing.
+
+        Deliberately NOT billed: an agent that cannot see its own remaining quota either wastes it
+        or hoards it, and both make the cost signal measure planning rather than search quality.
+        It authorizes through the same path as a search, so an unknown or expired token is refused
+        here too — a free operation is still not an oracle.
+        """
+        capability = self._authorize(token, check_quota=False)
+        return self._calls[capability.token], capability.max_calls
 
     # ---- receipts -------------------------------------------------------------------------------
     def usage_manifest(self) -> UsageManifest:
