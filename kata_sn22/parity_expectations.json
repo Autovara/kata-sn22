@@ -1,0 +1,1418 @@
+{
+  "cases": {
+    "ai-balanced-only-links": {
+      "collect_summary_sources": [
+        "https://example.com/0",
+        "https://example.com/1",
+        "https://example.com/2",
+        "https://example.com/3",
+        "https://example.com/4",
+        "https://example.com/5",
+        "https://example.com/6",
+        "https://example.com/7",
+        "https://example.com/8",
+        "https://example.com/9"
+      ],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.5,
+      "performance_reward": 1.0,
+      "resolve_scoring_budget": 15.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        1.0,
+        0.0
+      ],
+      "score": {
+        "penalty_multiplier": 1.0,
+        "perf_multiplier": 1.0,
+        "pool_share": 0.18,
+        "quality_gate": 0.75,
+        "reward": 0.75
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    },
+    "ai-deep-duplicate-links": {
+      "collect_summary_sources": [
+        "https://example.com/0"
+      ],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 1.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.85,
+      "performance_reward": 1.0,
+      "resolve_scoring_budget": 30.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        0.600000023842,
+        0.40000000596
+      ],
+      "score": {
+        "penalty_multiplier": 0.0,
+        "perf_multiplier": 1.0,
+        "pool_share": 0.18,
+        "quality_gate": 0.0,
+        "reward": 0.0
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    },
+    "ai-deep-slow-but-inside-budget": {
+      "collect_summary_sources": [
+        "https://example.com/0",
+        "https://example.com/1",
+        "https://example.com/2",
+        "https://example.com/3",
+        "https://example.com/4",
+        "https://example.com/5",
+        "https://example.com/6",
+        "https://example.com/7",
+        "https://example.com/8",
+        "https://example.com/9"
+      ],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.85,
+      "performance_reward": 0.647058823529,
+      "resolve_scoring_budget": 30.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        0.600000023842,
+        0.40000000596
+      ],
+      "score": {
+        "penalty_multiplier": 1.0,
+        "perf_multiplier": 0.947058823529,
+        "pool_share": 0.18,
+        "quality_gate": 0.760000023246,
+        "reward": 0.719764727898
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    },
+    "ai-fast-bad-summary-markdown": {
+      "collect_summary_sources": [
+        "https://example.com/0",
+        "https://example.com/1",
+        "https://example.com/2",
+        "https://example.com/3",
+        "https://example.com/4",
+        "https://example.com/5",
+        "https://example.com/6",
+        "https://example.com/7",
+        "https://example.com/8",
+        "https://example.com/9"
+      ],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.4,
+      "performance_reward": 1.0,
+      "resolve_scoring_budget": 5.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        0.600000023842,
+        0.40000000596
+      ],
+      "score": {
+        "penalty_multiplier": 0.0,
+        "perf_multiplier": 1.0,
+        "pool_share": 0.54,
+        "quality_gate": 0.0,
+        "reward": 0.0
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 1.0,
+      "timeout_penalty": 0.0
+    },
+    "ai-fast-clean": {
+      "collect_summary_sources": [
+        "https://example.com/0",
+        "https://example.com/1",
+        "https://example.com/2",
+        "https://example.com/3",
+        "https://example.com/4",
+        "https://example.com/5",
+        "https://example.com/6",
+        "https://example.com/7",
+        "https://example.com/8",
+        "https://example.com/9"
+      ],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.4,
+      "performance_reward": 1.0,
+      "resolve_scoring_budget": 5.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        0.600000023842,
+        0.40000000596
+      ],
+      "score": {
+        "penalty_multiplier": 1.0,
+        "perf_multiplier": 1.0,
+        "pool_share": 0.54,
+        "quality_gate": 0.760000023246,
+        "reward": 0.760000023246
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    },
+    "ai-fast-count-shortfall": {
+      "collect_summary_sources": [
+        "https://example.com/0"
+      ],
+      "count_penalty": 0.9,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.4,
+      "performance_reward": 1.0,
+      "resolve_scoring_budget": 5.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        0.600000023842,
+        0.40000000596
+      ],
+      "score": {
+        "penalty_multiplier": 0.100000023842,
+        "perf_multiplier": 1.0,
+        "pool_share": 0.54,
+        "quality_gate": 0.076000020444,
+        "reward": 0.076000020444
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    },
+    "ai-fast-domain-violation": {
+      "collect_summary_sources": [
+        "https://example.com/0",
+        "https://example.com/1",
+        "https://example.com/2",
+        "https://example.com/3",
+        "https://example.com/4",
+        "https://example.org/5",
+        "https://example.org/6",
+        "https://example.org/7",
+        "https://example.org/8",
+        "https://example.org/9"
+      ],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.5,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.4,
+      "performance_reward": 1.0,
+      "resolve_scoring_budget": 5.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        0.600000023842,
+        0.40000000596
+      ],
+      "score": {
+        "penalty_multiplier": 0.5,
+        "perf_multiplier": 1.0,
+        "pool_share": 0.54,
+        "quality_gate": 0.380000011623,
+        "reward": 0.380000011623
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    },
+    "ai-fast-implausibly-quick": {
+      "collect_summary_sources": [
+        "https://example.com/0",
+        "https://example.com/1",
+        "https://example.com/2",
+        "https://example.com/3",
+        "https://example.com/4",
+        "https://example.com/5",
+        "https://example.com/6",
+        "https://example.com/7",
+        "https://example.com/8",
+        "https://example.com/9"
+      ],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 1.0,
+      "perf_floor_for": 0.4,
+      "performance_reward": 0.0,
+      "resolve_scoring_budget": 5.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        0.600000023842,
+        0.40000000596
+      ],
+      "score": {
+        "penalty_multiplier": 0.0,
+        "perf_multiplier": 0.4,
+        "pool_share": 0.54,
+        "quality_gate": 0.0,
+        "reward": 0.0
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    },
+    "ai-fast-low-content-component": {
+      "collect_summary_sources": [
+        "https://example.com/0",
+        "https://example.com/1",
+        "https://example.com/2",
+        "https://example.com/3",
+        "https://example.com/4",
+        "https://example.com/5",
+        "https://example.com/6",
+        "https://example.com/7",
+        "https://example.com/8",
+        "https://example.com/9"
+      ],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.4,
+      "performance_reward": 1.0,
+      "resolve_scoring_budget": 5.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        0.600000023842,
+        0.40000000596
+      ],
+      "score": {
+        "penalty_multiplier": 1.0,
+        "perf_multiplier": 1.0,
+        "pool_share": 0.54,
+        "quality_gate": 0.0,
+        "reward": 0.420000007749
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    },
+    "ai-fast-timeout-overrun": {
+      "collect_summary_sources": [
+        "https://example.com/0",
+        "https://example.com/1",
+        "https://example.com/2",
+        "https://example.com/3",
+        "https://example.com/4",
+        "https://example.com/5",
+        "https://example.com/6",
+        "https://example.com/7",
+        "https://example.com/8",
+        "https://example.com/9"
+      ],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.4,
+      "performance_reward": 0.0,
+      "resolve_scoring_budget": 5.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        0.600000023842,
+        0.40000000596
+      ],
+      "score": {
+        "penalty_multiplier": 0.428571403027,
+        "perf_multiplier": 0.4,
+        "pool_share": 0.54,
+        "quality_gate": 0.325714276263,
+        "reward": 0.130285710505
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.571428596973
+    },
+    "ai-fast-unsourced-summary-link": {
+      "collect_summary_sources": [
+        "https://example.com/0",
+        "https://example.com/1",
+        "https://example.com/2",
+        "https://example.com/3",
+        "https://example.com/4",
+        "https://example.com/5",
+        "https://example.com/6",
+        "https://example.com/7",
+        "https://example.com/8",
+        "https://example.com/9"
+      ],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.4,
+      "performance_reward": 1.0,
+      "resolve_scoring_budget": 5.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        0.600000023842,
+        0.40000000596
+      ],
+      "score": {
+        "penalty_multiplier": 0.0,
+        "perf_multiplier": 1.0,
+        "pool_share": 0.54,
+        "quality_gate": 0.0,
+        "reward": 0.0
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 1.0,
+      "timeout_penalty": 0.0
+    },
+    "ai-fast-untimed": {
+      "collect_summary_sources": [
+        "https://example.com/0",
+        "https://example.com/1",
+        "https://example.com/2",
+        "https://example.com/3",
+        "https://example.com/4",
+        "https://example.com/5",
+        "https://example.com/6",
+        "https://example.com/7",
+        "https://example.com/8",
+        "https://example.com/9"
+      ],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.4,
+      "performance_reward": 0.555555555556,
+      "resolve_scoring_budget": 5.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        0.600000023842,
+        0.40000000596
+      ],
+      "score": {
+        "penalty_multiplier": 0.0,
+        "perf_multiplier": 0.733333333333,
+        "pool_share": 0.54,
+        "quality_gate": 0.0,
+        "reward": 0.0
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 1.0
+    },
+    "ai-twitter-tool-invalid-tweets": {
+      "collect_summary_sources": [
+        "https://x.com/alice/status/20",
+        "https://x.com/alice/status/21",
+        "https://x.com/alice/status/22",
+        "https://x.com/alice/status/23",
+        "https://x.com/alice/status/24",
+        "https://x.com/alice/status/25",
+        "https://x.com/alice/status/26",
+        "https://x.com/alice/status/27",
+        "https://x.com/alice/status/28"
+      ],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.4,
+      "performance_reward": 1.0,
+      "resolve_scoring_budget": 5.0,
+      "result_schema_penalty": 0.1,
+      "reward_weights_for": [
+        0.600000023842,
+        0.40000000596
+      ],
+      "score": {
+        "penalty_multiplier": 0.899999976158,
+        "perf_multiplier": 1.0,
+        "pool_share": 0.54,
+        "quality_gate": 0.45000000149,
+        "reward": 0.45000000149
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    },
+    "x-count-shortfall-and-slow": {
+      "collect_summary_sources": [],
+      "count_penalty": 0.9,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.7,
+      "performance_reward": 0.611111111111,
+      "resolve_scoring_budget": 10.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        1.0
+      ],
+      "score": {
+        "penalty_multiplier": 0.100000023842,
+        "perf_multiplier": 0.883333333333,
+        "pool_share": 0.1,
+        "quality_gate": 0.085000020266,
+        "reward": 0.075083351235
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    },
+    "x-date-range-violation": {
+      "collect_summary_sources": [],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.5,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.7,
+      "performance_reward": 1.0,
+      "resolve_scoring_budget": 10.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        1.0
+      ],
+      "score": {
+        "penalty_multiplier": 0.5,
+        "perf_multiplier": 1.0,
+        "pool_share": 0.1,
+        "quality_gate": 0.425,
+        "reward": 0.425
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    },
+    "x-duplicate-text": {
+      "collect_summary_sources": [],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 1.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.7,
+      "performance_reward": 1.0,
+      "resolve_scoring_budget": 10.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        1.0
+      ],
+      "score": {
+        "penalty_multiplier": 0.0,
+        "perf_multiplier": 1.0,
+        "pool_share": 0.1,
+        "quality_gate": 0.0,
+        "reward": 0.0
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    },
+    "x-latest-clean": {
+      "collect_summary_sources": [],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.7,
+      "performance_reward": 1.0,
+      "resolve_scoring_budget": 10.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        1.0
+      ],
+      "score": {
+        "penalty_multiplier": 1.0,
+        "perf_multiplier": 1.0,
+        "pool_share": 0.1,
+        "quality_gate": 0.85,
+        "reward": 0.85
+      },
+      "sort_order_penalty": 0.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    },
+    "x-latest-misordered": {
+      "collect_summary_sources": [],
+      "count_penalty": 0.0,
+      "date_range_penalty": 0.0,
+      "domain_filter_penalty": 0.0,
+      "duplicate_results_penalty": 0.0,
+      "min_realistic_time_penalty": 0.0,
+      "perf_floor_for": 0.7,
+      "performance_reward": 1.0,
+      "resolve_scoring_budget": 10.0,
+      "result_schema_penalty": 0.0,
+      "reward_weights_for": [
+        1.0
+      ],
+      "score": {
+        "penalty_multiplier": 0.0,
+        "perf_multiplier": 1.0,
+        "pool_share": 0.1,
+        "quality_gate": 0.0,
+        "reward": 0.0
+      },
+      "sort_order_penalty": 1.0,
+      "summary_structure_penalty": 0.0,
+      "timeout_penalty": 0.0
+    }
+  },
+  "constants": {
+    "AI_COMPONENT_FLOORS": [
+      0.3,
+      0.3
+    ],
+    "AI_CONTENT_WEIGHT": 0.6,
+    "AI_MODE_WEIGHTS": {
+      "balanced": 0.2,
+      "deep": 0.2,
+      "fast": 0.6
+    },
+    "AI_PERF_FLOOR": 0.5,
+    "AI_SUMMARY_WEIGHT": 0.4,
+    "MODE_BUDGETS": {
+      "balanced": 15,
+      "deep": 30,
+      "fast": 5
+    },
+    "MODE_PERF_FLOORS": {
+      "balanced": 0.5,
+      "deep": 0.85,
+      "fast": 0.4
+    },
+    "POOL_SHARES": {
+      "ai_search:balanced": 0.18,
+      "ai_search:deep": 0.18,
+      "ai_search:fast": 0.54,
+      "x_search:-": 0.1
+    },
+    "QUALITY_THRESHOLDS": {
+      "ai_search": 0.5,
+      "x_search": 0.6
+    },
+    "SEARCH_TYPE_WEIGHTS": {
+      "ai_search": 0.9,
+      "x_search": 0.1
+    },
+    "X_CONTENT_WEIGHT": 1.0,
+    "X_PERF_FLOOR": 0.7
+  },
+  "float_tolerance": 1e-06,
+  "recorded_by": "tools/record_parity.py",
+  "scalars": [
+    {
+      "args": [
+        "https://WWW.Example.com/Path/"
+      ],
+      "component": "normalize_source_url",
+      "value": "https://example.com/path"
+    },
+    {
+      "args": [
+        "http://www.example.com/x"
+      ],
+      "component": "normalize_source_url",
+      "value": "http://example.com/x"
+    },
+    {
+      "args": [
+        ""
+      ],
+      "component": "normalize_source_url",
+      "value": ""
+    },
+    {
+      "args": [
+        "https://example.com/a?utm_source=x&id=7&fbclid=z"
+      ],
+      "component": "source_key",
+      "value": "https://example.com/a?id=7"
+    },
+    {
+      "args": [
+        "https://www.example.com/a/"
+      ],
+      "component": "source_key",
+      "value": "https://example.com/a"
+    },
+    {
+      "args": [
+        "https://example.com/a?b=&c=1"
+      ],
+      "component": "source_key",
+      "value": "https://example.com/a?b=&c=1"
+    },
+    {
+      "args": [
+        "see [one](https://a.test) and [two](https://b.test)"
+      ],
+      "component": "extract_markdown_links",
+      "value": [
+        [
+          "one",
+          "https://a.test"
+        ],
+        [
+          "two",
+          "https://b.test"
+        ]
+      ]
+    },
+    {
+      "args": [
+        "no links here"
+      ],
+      "component": "extract_markdown_links",
+      "value": []
+    },
+    {
+      "args": [
+        "**Bold** heading"
+      ],
+      "component": "check_markdown_structure",
+      "value": [
+        true,
+        []
+      ]
+    },
+    {
+      "args": [
+        "# Hash heading"
+      ],
+      "component": "check_markdown_structure",
+      "value": [
+        false,
+        [
+          "Uses # headers instead of **"
+        ]
+      ]
+    },
+    {
+      "args": [
+        "   "
+      ],
+      "component": "check_markdown_structure",
+      "value": [
+        false,
+        [
+          "Empty response"
+        ]
+      ]
+    },
+    {
+      "args": [
+        "@bob @carol Hello  https://t.co/abc world&amp;more"
+      ],
+      "component": "format_text_for_match",
+      "value": "Helloworld&more"
+    },
+    {
+      "args": [
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      ],
+      "component": "format_text_for_match",
+      "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "args": [
+        [
+          "HTTPS://Example.com/path",
+          "example.com",
+          " other.org. "
+        ]
+      ],
+      "component": "normalize_domains",
+      "value": [
+        "example.com",
+        "other.org"
+      ]
+    },
+    {
+      "args": [
+        []
+      ],
+      "component": "normalize_domains",
+      "value": []
+    },
+    {
+      "args": [
+        "https://sub.example.com/x",
+        [
+          "example.com"
+        ]
+      ],
+      "component": "host_in_domains",
+      "value": true
+    },
+    {
+      "args": [
+        "https://notexample.com/x",
+        [
+          "example.com"
+        ]
+      ],
+      "component": "host_in_domains",
+      "value": false
+    },
+    {
+      "args": [
+        "https://example.com/x",
+        []
+      ],
+      "component": "host_in_domains",
+      "value": false
+    },
+    {
+      "args": [
+        "bittensor emissions site:example.com site:foo.org/bar"
+      ],
+      "component": "parse_web_query",
+      "value": {
+        "sites": [
+          "example.com",
+          "foo.org"
+        ],
+        "text": "bittensor emissions"
+      }
+    },
+    {
+      "args": [
+        ""
+      ],
+      "component": "parse_web_query",
+      "value": {
+        "sites": [],
+        "text": ""
+      }
+    },
+    {
+      "args": [
+        "Mon Dec 29 12:00:00 +0000 2025",
+        "2025-12-28T00:00:00Z",
+        "2025-12-30T00:00:00Z"
+      ],
+      "component": "tweet_date_in_range",
+      "value": true
+    },
+    {
+      "args": [
+        "Sat Jan 04 09:00:00 +0000 2025",
+        "2025-12-28T00:00:00Z",
+        "2025-12-30T00:00:00Z"
+      ],
+      "component": "tweet_date_in_range",
+      "value": false
+    },
+    {
+      "args": [
+        "not a date",
+        null,
+        null
+      ],
+      "component": "tweet_date_in_range",
+      "value": false
+    },
+    {
+      "args": [
+        5.0
+      ],
+      "component": "min_realistic_for_budget",
+      "value": 1.0
+    },
+    {
+      "args": [
+        0.0
+      ],
+      "component": "min_realistic_for_budget",
+      "value": 1.0
+    },
+    {
+      "args": [
+        30.0
+      ],
+      "component": "min_realistic_for_budget",
+      "value": 1.0
+    },
+    {
+      "args": [
+        0.0,
+        0.5
+      ],
+      "component": "perf_factor",
+      "value": 0.5
+    },
+    {
+      "args": [
+        1.0,
+        0.85
+      ],
+      "component": "perf_factor",
+      "value": 1.0
+    },
+    {
+      "args": [
+        0.5,
+        5.0
+      ],
+      "component": "performance_reward",
+      "value": 0.0
+    },
+    {
+      "args": [
+        3.0,
+        5.0
+      ],
+      "component": "performance_reward",
+      "value": 1.0
+    },
+    {
+      "args": [
+        4.0,
+        5.0
+      ],
+      "component": "performance_reward",
+      "value": 0.777777777778
+    },
+    {
+      "args": [
+        7.5,
+        5.0
+      ],
+      "component": "performance_reward",
+      "value": 0.0
+    },
+    {
+      "args": [
+        2.0,
+        0.0
+      ],
+      "component": "performance_reward",
+      "value": 1.0
+    },
+    {
+      "args": [
+        9.0,
+        0.0
+      ],
+      "component": "performance_reward",
+      "value": 0.0
+    },
+    {
+      "args": [
+        0.0
+      ],
+      "component": "applied_penalty",
+      "value": 1.0
+    },
+    {
+      "args": [
+        0.4
+      ],
+      "component": "applied_penalty",
+      "value": 0.600000023842
+    },
+    {
+      "args": [
+        1.7
+      ],
+      "component": "applied_penalty",
+      "value": 0.0
+    },
+    {
+      "args": [
+        -0.3
+      ],
+      "component": "applied_penalty",
+      "value": 1.0
+    },
+    {
+      "args": [
+        [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b"
+          },
+          {
+            "id": "a"
+          }
+        ],
+        "id"
+      ],
+      "component": "first_duplicate_id",
+      "value": "a"
+    },
+    {
+      "args": [
+        [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b"
+          }
+        ],
+        "id"
+      ],
+      "component": "first_duplicate_id",
+      "value": null
+    },
+    {
+      "args": [
+        [
+          {
+            "link": "https://example.com/x?utm_source=q"
+          },
+          {
+            "link": "https://www.example.com/x/"
+          }
+        ],
+        "link"
+      ],
+      "component": "first_duplicate_id",
+      "value": "https://example.com/x"
+    },
+    {
+      "args": [
+        [
+          {
+            "created_at": "Mon Dec 29 12:00:00 +0000 2025"
+          },
+          {
+            "created_at": "Mon Dec 29 11:00:00 +0000 2025"
+          }
+        ]
+      ],
+      "component": "is_descending_by_created_at",
+      "value": true
+    },
+    {
+      "args": [
+        [
+          {
+            "created_at": "Mon Dec 29 11:00:00 +0000 2025"
+          },
+          {
+            "created_at": "Mon Dec 29 12:00:00 +0000 2025"
+          }
+        ]
+      ],
+      "component": "is_descending_by_created_at",
+      "value": false
+    },
+    {
+      "args": [
+        [
+          {
+            "created_at": ""
+          }
+        ]
+      ],
+      "component": "is_descending_by_created_at",
+      "value": false
+    },
+    {
+      "args": [
+        {
+          "bookmark_count": 0,
+          "created_at": "Mon Dec 29 12:00:00 +0000 2025",
+          "id": "9",
+          "is_quote_tweet": false,
+          "is_retweet": false,
+          "like_count": 2,
+          "quote_count": 0,
+          "reply_count": 0,
+          "retweet_count": 1,
+          "text": "ok",
+          "url": "https://x.com/alice/status/9",
+          "user": {
+            "id": "u9",
+            "username": "alice"
+          }
+        }
+      ],
+      "component": "is_valid_tweet",
+      "value": true
+    },
+    {
+      "args": [
+        {
+          "id": "9",
+          "text": "missing counts"
+        }
+      ],
+      "component": "is_valid_tweet",
+      "value": false
+    },
+    {
+      "args": [
+        {
+          "link": "https://example.com/0",
+          "snippet": "snippet 0",
+          "title": "Doc 0"
+        }
+      ],
+      "component": "is_valid_web_search_result",
+      "value": true
+    },
+    {
+      "args": [
+        {
+          "title": "no link"
+        }
+      ],
+      "component": "is_valid_web_search_result",
+      "value": false
+    }
+  ],
+  "schema_version": 1,
+  "source_pins": {
+    "AI_CONTENT_WEIGHT": {
+      "executed": true,
+      "file_sha256": "361e81d404c66fd108a3aec5974f7c4c6830226aa5a5aecfef92b336dae48193",
+      "symbol_lines": 51,
+      "symbol_sha256": "c0498a26bb139948aa59dc4a01c43f956470c97f4c6fd724cf675f0a35716c4a",
+      "upstream_path": "neurons/validators/scrapers/advanced_scraper_validator.py",
+      "upstream_symbol": "AdvancedScraperValidator.__init__"
+    },
+    "AI_MODE_WEIGHTS": {
+      "executed": true,
+      "file_sha256": "255c29bdec5cbe9bb7ff0ee1b6e3b7ebb69fac090c8a63c4c0f3d3ca677ec28e",
+      "symbol_lines": 5,
+      "symbol_sha256": "9ad119991d1c44b6241d5fb1adb34b85ef5e4c96452429898accd8efcf5fd014",
+      "upstream_path": "neurons/validators/scoring/constants.py",
+      "upstream_symbol": "AI_MODE_WEIGHTS"
+    },
+    "MODE_BUDGETS": {
+      "executed": true,
+      "file_sha256": "9ce4cb4ec65515045fe825ee0edba09e47efdb3499450aafd8e8d1dcce2188e3",
+      "symbol_lines": 5,
+      "symbol_sha256": "5d324100901711d8f205f0be596ea0c11755fef671cfcff46026a29c1f1b3ec5",
+      "upstream_path": "desearch/utils.py",
+      "upstream_symbol": "MODE_BUDGETS"
+    },
+    "MODE_PERF_FLOORS": {
+      "executed": true,
+      "file_sha256": "93db66a0c9ea875e988d64f9d16eeaac7088bcc17db17a263eb5c918a6d13260",
+      "symbol_lines": 1,
+      "symbol_sha256": "cde960b7da08330148297d2eea7b16be97cf695c40e28c6493ba4258699ef254",
+      "upstream_path": "neurons/validators/reward/performance_reward.py",
+      "upstream_symbol": "MODE_PERF_FLOORS"
+    },
+    "POOL_SHARES": {
+      "executed": true,
+      "file_sha256": "255c29bdec5cbe9bb7ff0ee1b6e3b7ebb69fac090c8a63c4c0f3d3ca677ec28e",
+      "symbol_lines": 4,
+      "symbol_sha256": "d939e1ec022ec0b78a1a1213ee387c3fe171130dfb3ff838eeeac21b44a12e99",
+      "upstream_path": "neurons/validators/scoring/constants.py",
+      "upstream_symbol": "POOL_SHARES"
+    },
+    "QUALITY_THRESHOLDS": {
+      "executed": true,
+      "file_sha256": "255c29bdec5cbe9bb7ff0ee1b6e3b7ebb69fac090c8a63c4c0f3d3ca677ec28e",
+      "symbol_lines": 4,
+      "symbol_sha256": "9cda9fdba4f372f28bf840dbf76d68fbbcd5701dbc7909f1f253af4265087b98",
+      "upstream_path": "neurons/validators/scoring/constants.py",
+      "upstream_symbol": "QUALITY_THRESHOLDS"
+    },
+    "SEARCH_TYPE_WEIGHTS": {
+      "executed": true,
+      "file_sha256": "255c29bdec5cbe9bb7ff0ee1b6e3b7ebb69fac090c8a63c4c0f3d3ca677ec28e",
+      "symbol_lines": 4,
+      "symbol_sha256": "9d06e1fd775f8380c2658e9285492a1b328fa6eee3d1e3598c05194b9e5fedd1",
+      "upstream_path": "neurons/validators/scoring/constants.py",
+      "upstream_symbol": "SEARCH_TYPE_WEIGHTS"
+    },
+    "X_CONTENT_WEIGHT": {
+      "executed": true,
+      "file_sha256": "dbd0f89dddb0037f5cad49178841f18352d06af1eff6c1c02937a0318cd92ae8",
+      "symbol_lines": 41,
+      "symbol_sha256": "b1d625b5315187a2f62553bd3405b64c8d0b145a188be6e587758f729d1490d1",
+      "upstream_path": "neurons/validators/scrapers/x_scraper_validator.py",
+      "upstream_symbol": "XScraperValidator.__init__"
+    },
+    "applied_penalty": {
+      "executed": true,
+      "file_sha256": "c6799ac5c490eb529cd95b1165d627fe7a0aa6841d16e3769b9a7db363cfae77",
+      "symbol_lines": 15,
+      "symbol_sha256": "18d946d5984b94de82bee0a6febd6d3a045a1af0e1553ebd7578ac1db80f451e",
+      "upstream_path": "neurons/validators/penalty/penalty.py",
+      "upstream_symbol": "BasePenaltyModel.apply_penalties"
+    },
+    "check_markdown_structure": {
+      "executed": true,
+      "file_sha256": "e3c3933372a0e4432601a0d3cceca487f842452aa8e117be5b3a3a821bdccd82",
+      "symbol_lines": 8,
+      "symbol_sha256": "221d1b2339342f240946e215a4b4e0fd41302fb7d7963b81fef8f4cb07c11223",
+      "upstream_path": "neurons/validators/utils/response_checks.py",
+      "upstream_symbol": "check_markdown_structure"
+    },
+    "collect_summary_sources": {
+      "executed": true,
+      "file_sha256": "e3c3933372a0e4432601a0d3cceca487f842452aa8e117be5b3a3a821bdccd82",
+      "symbol_lines": 26,
+      "symbol_sha256": "489b842fd1e16699cd8bd4671e877b40c54736fc9600f2ace2f98a9879870e77",
+      "upstream_path": "neurons/validators/utils/response_checks.py",
+      "upstream_symbol": "collect_summary_sources"
+    },
+    "count_penalty": {
+      "executed": true,
+      "file_sha256": "112943fa4a31962da3d8d82b7e36fbeb282a6d7120f33852151ec416bfe3fd8f",
+      "symbol_lines": 12,
+      "symbol_sha256": "560a7669a1db9dd914425f50d9a9d0852dc02054774f08c6533539ef5dedceac",
+      "upstream_path": "neurons/validators/penalty/count_penalty.py",
+      "upstream_symbol": "CountPenaltyModel.penalty_for"
+    },
+    "date_range_penalty": {
+      "executed": true,
+      "file_sha256": "b8af70b46754fe66e104555622073502994799d03f21b3f4097eefcade2f6a62",
+      "symbol_lines": 18,
+      "symbol_sha256": "e5cdc7b3f57905c1bd4956ce3c9d7d413430d51a21ff57693317624551e66729",
+      "upstream_path": "neurons/validators/penalty/date_range_penalty.py",
+      "upstream_symbol": "DateRangePenaltyModel.penalty_for"
+    },
+    "domain_filter_penalty": {
+      "executed": true,
+      "file_sha256": "b00ebece2a57b6611c25b163198b0196b32665164ad467dcd8ca27d296b786b7",
+      "symbol_lines": 15,
+      "symbol_sha256": "edf7b3a9ffd19c2cdaeaaea0d3775e45c3ea3eebb4b0db2b0f8f2c89eb26f4b1",
+      "upstream_path": "neurons/validators/penalty/domain_filter_penalty.py",
+      "upstream_symbol": "DomainFilterPenaltyModel.penalty_for"
+    },
+    "duplicate_results_penalty": {
+      "executed": true,
+      "file_sha256": "4ce9cfbfac767f39a98c5b77c5548527286b3c05be3f868ec99ee5430cff3d0c",
+      "symbol_lines": 9,
+      "symbol_sha256": "55e73be7b2e1a64479839c5f7ebc77431450d557173502d6cb3a2658abd5897a",
+      "upstream_path": "neurons/validators/penalty/duplicate_results_penalty.py",
+      "upstream_symbol": "DuplicateResultsPenaltyModel.penalty_for"
+    },
+    "extract_markdown_links": {
+      "executed": true,
+      "file_sha256": "e3c3933372a0e4432601a0d3cceca487f842452aa8e117be5b3a3a821bdccd82",
+      "symbol_lines": 3,
+      "symbol_sha256": "b27a543c41a46166098a5a0f5fd9398d3c0e83b187f5e532dcf359437667ec8a",
+      "upstream_path": "neurons/validators/utils/response_checks.py",
+      "upstream_symbol": "extract_markdown_links"
+    },
+    "first_duplicate_id": {
+      "executed": true,
+      "file_sha256": "e3c3933372a0e4432601a0d3cceca487f842452aa8e117be5b3a3a821bdccd82",
+      "symbol_lines": 15,
+      "symbol_sha256": "7e5dfde39f1bbbfdf232967dcf78e38c749c7516a92f22cc844c431501f6b21b",
+      "upstream_path": "neurons/validators/utils/response_checks.py",
+      "upstream_symbol": "first_duplicate_id"
+    },
+    "format_text_for_match": {
+      "executed": true,
+      "file_sha256": "9ce4cb4ec65515045fe825ee0edba09e47efdb3499450aafd8e8d1dcce2188e3",
+      "symbol_lines": 13,
+      "symbol_sha256": "03c15fbc0fc4235a2474001f337b710ea32cd45c63a94c6d05ee8d51c0c02965",
+      "upstream_path": "desearch/utils.py",
+      "upstream_symbol": "format_text_for_match"
+    },
+    "host_in_domains": {
+      "executed": true,
+      "file_sha256": "9ed7a75666b166f50d4a96fd7d48b8dfa2d9d47f4d8b15f0ebc3d66e8cab6b8f",
+      "symbol_lines": 9,
+      "symbol_sha256": "3447e53b5194b36ef46e4d5ea4c887d7b1ea7ad100780f701287773953a2ec33",
+      "upstream_path": "neurons/validators/utils/web_query_operators.py",
+      "upstream_symbol": "host_in_domains"
+    },
+    "is_descending_by_created_at": {
+      "executed": true,
+      "file_sha256": "e3c3933372a0e4432601a0d3cceca487f842452aa8e117be5b3a3a821bdccd82",
+      "symbol_lines": 14,
+      "symbol_sha256": "5b5545ebb4f2426d8918f869e8f5392c641794f82a1a2f006de4357d9e21519a",
+      "upstream_path": "neurons/validators/utils/response_checks.py",
+      "upstream_symbol": "is_descending_by_created_at"
+    },
+    "is_valid_tweet": {
+      "executed": true,
+      "file_sha256": "9ce4cb4ec65515045fe825ee0edba09e47efdb3499450aafd8e8d1dcce2188e3",
+      "symbol_lines": 7,
+      "symbol_sha256": "c325e1ad317ee2c49d3763c6f8eec7d8ed2ef0cae6f296fb5151ea10bc47e02d",
+      "upstream_path": "desearch/utils.py",
+      "upstream_symbol": "is_valid_tweet"
+    },
+    "is_valid_web_search_result": {
+      "executed": true,
+      "file_sha256": "9ce4cb4ec65515045fe825ee0edba09e47efdb3499450aafd8e8d1dcce2188e3",
+      "symbol_lines": 7,
+      "symbol_sha256": "6319db8b3ac674687a14128d3ef5dff7769acc7ab5eeaa5f566848dbadd2f97e",
+      "upstream_path": "desearch/utils.py",
+      "upstream_symbol": "is_valid_web_search_result"
+    },
+    "min_realistic_for_budget": {
+      "executed": true,
+      "file_sha256": "93db66a0c9ea875e988d64f9d16eeaac7088bcc17db17a263eb5c918a6d13260",
+      "symbol_lines": 4,
+      "symbol_sha256": "c1ee87373051ab305ad50a991db71dc4216b5f5ad45cea962d611f9cf6b3b7f0",
+      "upstream_path": "neurons/validators/reward/performance_reward.py",
+      "upstream_symbol": "min_realistic_for_budget"
+    },
+    "min_realistic_time_penalty": {
+      "executed": true,
+      "file_sha256": "3b08801fe4bc1bcc748ff377d34e6b6ba80f556db775e1ffc601d0d883505044",
+      "symbol_lines": 9,
+      "symbol_sha256": "d588cd9bb8d1491be5d2f7044ad6d3a5802cf8baab535c9434bcf847334755f9",
+      "upstream_path": "neurons/validators/penalty/min_realistic_time_penalty.py",
+      "upstream_symbol": "MinRealisticTimePenaltyModel.penalty_for"
+    },
+    "normalize_domains": {
+      "executed": true,
+      "file_sha256": "9ed7a75666b166f50d4a96fd7d48b8dfa2d9d47f4d8b15f0ebc3d66e8cab6b8f",
+      "symbol_lines": 7,
+      "symbol_sha256": "7df49b32eafe0f69103d5150345d3f029afc69544fcf7c4eaedffb03b26d5f22",
+      "upstream_path": "neurons/validators/utils/web_query_operators.py",
+      "upstream_symbol": "normalize_domains"
+    },
+    "normalize_source_url": {
+      "executed": true,
+      "file_sha256": "e3c3933372a0e4432601a0d3cceca487f842452aa8e117be5b3a3a821bdccd82",
+      "symbol_lines": 9,
+      "symbol_sha256": "efb069935991c204694b4a200c9daa5d7e8d150a8f1f97e788fb1ed083b5f5f0",
+      "upstream_path": "neurons/validators/utils/response_checks.py",
+      "upstream_symbol": "normalize_source_url"
+    },
+    "parse_web_query": {
+      "executed": true,
+      "file_sha256": "9ed7a75666b166f50d4a96fd7d48b8dfa2d9d47f4d8b15f0ebc3d66e8cab6b8f",
+      "symbol_lines": 12,
+      "symbol_sha256": "8a99df1ddd5d4ad428b3a89482f203e8d92fdf9a35e8fe170a8230087aeeae40",
+      "upstream_path": "neurons/validators/utils/web_query_operators.py",
+      "upstream_symbol": "parse_web_query"
+    },
+    "perf_factor": {
+      "executed": true,
+      "file_sha256": "93db66a0c9ea875e988d64f9d16eeaac7088bcc17db17a263eb5c918a6d13260",
+      "symbol_lines": 2,
+      "symbol_sha256": "2926b9ad7f048bff6e5d9704cddafd27e4535ca0d1ce708bbc102f2ef22bc369",
+      "upstream_path": "neurons/validators/reward/performance_reward.py",
+      "upstream_symbol": "perf_factor"
+    },
+    "perf_floor_for": {
+      "executed": true,
+      "file_sha256": "93db66a0c9ea875e988d64f9d16eeaac7088bcc17db17a263eb5c918a6d13260",
+      "symbol_lines": 4,
+      "symbol_sha256": "057eab036c9a96e88a197b2f8ad5cfb80ffbcbf329d9eddf215c7dfa0b069774",
+      "upstream_path": "neurons/validators/reward/performance_reward.py",
+      "upstream_symbol": "perf_floor_for"
+    },
+    "performance_reward": {
+      "executed": true,
+      "file_sha256": "93db66a0c9ea875e988d64f9d16eeaac7088bcc17db17a263eb5c918a6d13260",
+      "symbol_lines": 14,
+      "symbol_sha256": "cd9b677ce5b0649344c10005a37aa03151a7ec91e44cf7f869b395a62f8df6bf",
+      "upstream_path": "neurons/validators/reward/performance_reward.py",
+      "upstream_symbol": "PerformanceRewardModel.reward"
+    },
+    "resolve_scoring_budget": {
+      "executed": true,
+      "file_sha256": "93db66a0c9ea875e988d64f9d16eeaac7088bcc17db17a263eb5c918a6d13260",
+      "symbol_lines": 14,
+      "symbol_sha256": "e13ed2d90548fb9439bdb1f3170163aa1c657d7c3b5fc311445d25be9260ffb7",
+      "upstream_path": "neurons/validators/reward/performance_reward.py",
+      "upstream_symbol": "resolve_scoring_budget"
+    },
+    "result_schema_penalty": {
+      "executed": true,
+      "file_sha256": "23fd12f53680150be74abc1b48f087bdaf0835a98d8a199d843a0d7ee6cb6111",
+      "symbol_lines": 11,
+      "symbol_sha256": "8d1c285ab28b353553f8cf77e225b0a7282e03a61fe6874079ba26254ecd29e7",
+      "upstream_path": "neurons/validators/penalty/result_schema_penalty.py",
+      "upstream_symbol": "ResultSchemaPenaltyModel.penalty_for"
+    },
+    "reward_weights_for": {
+      "executed": true,
+      "file_sha256": "361e81d404c66fd108a3aec5974f7c4c6830226aa5a5aecfef92b336dae48193",
+      "symbol_lines": 9,
+      "symbol_sha256": "0829557d30306e781fc99b500ca3ff8c4d0b8e95f47065e05d866c2495b0b6b7",
+      "upstream_path": "neurons/validators/scrapers/advanced_scraper_validator.py",
+      "upstream_symbol": "AdvancedScraperValidator.compute_reward_weights_matrix"
+    },
+    "score_response": {
+      "executed": false,
+      "file_sha256": "6c2a12c7f480e16b3a654d44045a0b68381ddd0c97b46d4268c2b47cdef167ac",
+      "symbol_lines": 185,
+      "symbol_sha256": "f8de87ab2fdca74abfb0b3f5ab175ac86e4100e23f62fe1e860d6ad70220278a",
+      "upstream_path": "neurons/validators/scrapers/base_scraper_validator.py",
+      "upstream_symbol": "BaseScraperValidator.compute_rewards_and_penalties"
+    },
+    "sort_order_penalty": {
+      "executed": true,
+      "file_sha256": "63aac2f770fba5ac45f86cb69bbf58c77b2ef06cb1ecb8a1fc0243107fe16c14",
+      "symbol_lines": 8,
+      "symbol_sha256": "2d4ee7914399a4b6cf8d16d469508d64c5999aae18d12a447a74b5f8dd42ba7f",
+      "upstream_path": "neurons/validators/penalty/sort_order_penalty.py",
+      "upstream_symbol": "SortOrderPenaltyModel.penalty_for"
+    },
+    "source_key": {
+      "executed": true,
+      "file_sha256": "e3c3933372a0e4432601a0d3cceca487f842452aa8e117be5b3a3a821bdccd82",
+      "symbol_lines": 12,
+      "symbol_sha256": "f66ba6124b5f79d0780f0efc00a8eab1b297a3761f4e3b2161d85c27c25805e5",
+      "upstream_path": "neurons/validators/utils/response_checks.py",
+      "upstream_symbol": "source_key"
+    },
+    "summary_structure_penalty": {
+      "executed": true,
+      "file_sha256": "b48f6636a7e4d57455227e1c3fab786e1d388e9e36a8557568622e12c5cf6f9a",
+      "symbol_lines": 19,
+      "symbol_sha256": "0a9b8646204591244b9c2fe86898a110bad070bbac6b5d98749539bcb4441063",
+      "upstream_path": "neurons/validators/penalty/summary_structure_penalty.py",
+      "upstream_symbol": "SummaryStructurePenaltyModel.penalty_for"
+    },
+    "timeout_penalty": {
+      "executed": true,
+      "file_sha256": "38372aa3741ca1bfec78ffd030599d459258d5376d65e49d5f5db17fa6d3af83",
+      "symbol_lines": 33,
+      "symbol_sha256": "cfe09cf6d3c1f8b3db75584b09408e3cb9e641d3aaca8d0db7386f2dc433c4d6",
+      "upstream_path": "neurons/validators/penalty/timeout_penalty.py",
+      "upstream_symbol": "TimeoutPenaltyModel.calculate_penalties"
+    },
+    "tweet_date_in_range": {
+      "executed": true,
+      "file_sha256": "e3c3933372a0e4432601a0d3cceca487f842452aa8e117be5b3a3a821bdccd82",
+      "symbol_lines": 18,
+      "symbol_sha256": "1b9c813cea81427ee470cdc069798c8003d1264a24be18568a098deb26377b50",
+      "upstream_path": "neurons/validators/utils/response_checks.py",
+      "upstream_symbol": "tweet_date_in_range"
+    }
+  },
+  "upstream_commit": "bea9712f58a5fc01c57ec441ce279499529d8bf6",
+  "upstream_repo": "https://github.com/Desearch-ai/subnet-22",
+  "upstream_tree_sha256": "2b47fb76678448670ee671cfa8ba49c1a7c64fc5b913f88faa2b12feadfc5206"
+}

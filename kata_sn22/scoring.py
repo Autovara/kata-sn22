@@ -14,25 +14,73 @@ than a weighted sum on purpose: a weighted sum lets a candidate buy a quality wi
 spend, whereas priority order says plainly that an agent which answers fewer queries validly does
 not win by being prettier on the ones it did answer.
 
-**Upstream weights** (§5.3) are kept where the corresponding component exists: AI search 0.90 / X
-search 0.10; within AI search fast 0.60, balanced 0.20, deep 0.20; AI quality content 0.60 / summary
-0.40. This deliberately does NOT claim to reproduce on-chain emissions, which are pool-relative and
-depend on miner population — Kata compares exactly two agents on one sealed challenge.
+**Upstream weights** (§5.3) are not restated here. Since SN22-5 the whole weighting, penalty and
+combination path is :mod:`kata_sn22.upstream_adapter` — a port of the pinned upstream that
+:mod:`kata_sn22.parity` proves, by execution, computes what the real upstream computes. A second
+copy of "0.90 / 0.10" living in this file is a copy that can drift silently, so there is not one.
+
+What that buys, concretely: ``sn22_weighted_quality`` is now the upstream reward — the AI content /
+summary split, the ONLY_LINKS reweighting, the component floors, the applicable penalties, and the
+pool shares — rather than a Kata-shaped approximation of it. It still does NOT claim to reproduce
+on-chain emissions, which are pool-relative and depend on miner population; Kata compares exactly
+two agents on one sealed challenge.
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
 
+from kata_sn22 import upstream_adapter as upstream
 from kata_sn22.manifests import SnapshotManifest, UsageManifest
 from kata_sn22.protocol import ErrorClass, Task, TaskOutput
 
-#: Upstream search-type weights (§5.3).
-SEARCH_TYPE_WEIGHTS = {"ai_search": 0.90, "x_search": 0.10}
-#: Within AI search, by mode.
-AI_MODE_WEIGHTS = {"fast": 0.60, "balanced": 0.20, "deep": 0.20}
-#: Within AI quality: how much of the score is the retrieved content vs the written summary.
-AI_QUALITY_WEIGHTS = {"content_relevance": 0.60, "summary_relevance": 0.40}
+#: Re-exported from the adapter so there is exactly one definition of each weight in the package.
+SEARCH_TYPE_WEIGHTS = upstream.SEARCH_TYPE_WEIGHTS
+AI_MODE_WEIGHTS = upstream.AI_MODE_WEIGHTS
+AI_QUALITY_WEIGHTS = {"content_relevance": upstream.AI_CONTENT_WEIGHT,
+                      "summary_relevance": upstream.AI_SUMMARY_WEIGHT}
+
+#: A stable, inert URL for a sealed-snapshot document. The upstream penalties are written against
+#: web results, identified by link; the sealed corpus identifies documents by ``doc_id``. One scheme
+#: maps between them, so "did the miner return this source" means the same thing on both sides.
+#: Not resolvable, and not meant to be — nothing dereferences it.
+SNAPSHOT_URL_SCHEME = "sn22-snapshot"
+
+#: The upstream penalties whose inputs a sealed Kata challenge actually carries (plan §5.3: retain
+#: the upstream components that are *included*). Two are deliberately absent:
+#:
+#: * ``timeout_penalty`` and ``min_realistic_time_penalty`` are about live provider latency. A
+#:   sealed offline snapshot has none to measure, and Kata already publishes
+#:   ``sn22_latency_seconds`` as its own ranked signal. Folding latency into quality (priority 2)
+#:   as well would let a fast agent outrank a better one on the signal meant to be about answers.
+#:
+#: The performance multiplier is excluded for the same reason. Both exclusions are recorded in the
+#: score detail rather than left implicit, so a reader of a challenge result can see what was and
+#: was not applied.
+KATA_APPLICABLE_PENALTIES: tuple[str, ...] = (
+    "count_penalty",
+    "duplicate_results_penalty",
+    "result_schema_penalty",
+    "domain_filter_penalty",
+    "date_range_penalty",
+    "sort_order_penalty",
+    "summary_structure_penalty",
+)
+KATA_EXCLUDED_PENALTIES: tuple[str, ...] = ("timeout_penalty", "min_realistic_time_penalty")
+
+
+def upstream_commit() -> str:
+    """The pinned upstream this scorer's components came from.
+
+    Imported lazily so the scoring module still loads where the vendored snapshot is absent — the
+    comparator and the signal schema are useful to a reviewer with only the source, and refusing to
+    import over a missing tree would make them unreadable rather than safe. The lane itself fails
+    closed elsewhere: `verify_snapshot` runs at conformance and install time.
+    """
+    from kata_sn22.upstream_snapshot import UPSTREAM_COMMIT
+
+    return UPSTREAM_COMMIT
+
 
 #: The published rank signals, in promotion priority order. ``higher`` says which direction wins.
 #: This tuple IS the contract: the comparator walks it in order, so reordering it changes
@@ -134,11 +182,87 @@ def _relevance(output: TaskOutput, snapshot: SnapshotManifest, task: Task) -> tu
 
 
 def _task_weight(task: Task) -> float:
-    """The upstream weight for one task's category (§5.3)."""
-    weight = SEARCH_TYPE_WEIGHTS.get(task.search_type, 0.0)
-    if task.search_type == "ai_search":
-        weight *= AI_MODE_WEIGHTS.get(task.ai_mode or "", 0.0)
-    return weight
+    """The upstream pool share for one task's category (§5.3), from the pinned tables."""
+    if task.search_type == "x_search":
+        return upstream.POOL_SHARES[("x_search", None)]
+    return upstream.POOL_SHARES.get(("ai_search", task.ai_mode), 0.0)
+
+
+def snapshot_url(doc_id: str) -> str:
+    """The stable link a sealed document is known by inside the upstream penalties."""
+    return f"{SNAPSHOT_URL_SCHEME}://{doc_id}"
+
+
+def _upstream_summary(output: TaskOutput) -> str:
+    """Kata's summary rendered the way the upstream summary checks expect to read it.
+
+    Upstream miners return prose with markdown links, and `summary_structure_penalty` asks whether
+    every link is one the miner itself returned. Kata's protocol carries the same claim in a
+    structured ``citations`` array instead, which is strictly better to score against — so the
+    citations are rendered back into markdown links rather than the penalty being dropped.
+
+    The translation is faithful in both directions that matter: a summary with no citations has no
+    links and is penalised exactly as an upstream summary with none would be, and a citation to a
+    document the agent never returned is a link outside its own sources, which is the same finding
+    the penalty was written to make.
+    """
+    links = " ".join(f"[{citation.doc_id}]({snapshot_url(citation.doc_id)})"
+                     for citation in output.citations)
+    return f"{output.summary}\n\n{links}".strip() if links else output.summary
+
+
+def _upstream_response(attempt: TaskAttempt, *,
+                       snapshot: SnapshotManifest) -> upstream.UpstreamResponse:
+    """One Kata attempt as the response shape the pinned upstream components score.
+
+    Only the fields the adapted components read are populated, and every one of them comes from the
+    lane or the sealed snapshot — never from an unvalidated candidate claim. ``count`` is the number
+    of results the task ASKED for, which is the same ``max_results`` the agent was told, so the
+    count penalty measures a shortfall against a published request rather than against a secret.
+    """
+    task = attempt.task
+    output = attempt.output
+    results = output.results if output is not None else ()
+    summary = _upstream_summary(output) if output is not None else ""
+
+    if task.search_type == "x_search":
+        # The sealed corpus has documents, not tweets, so each result is rendered as the tweet the
+        # upstream schema check expects. created_at descends with result order, which keeps a
+        # sort-order check meaningful if a future challenge config ever requests one.
+        tweets = tuple({
+            "id": result.doc_id,
+            "text": result.snippet,
+            "reply_count": 0, "retweet_count": 0, "like_count": 0,
+            "quote_count": 0, "bookmark_count": 0,
+            "url": snapshot_url(result.doc_id),
+            "created_at": upstream.synthetic_created_at(index),
+            "is_quote_tweet": False, "is_retweet": False,
+            "user": {"id": f"sn22:{result.doc_id}", "username": "sn22-snapshot"},
+        } for index, result in enumerate(results))
+        return upstream.UpstreamResponse(
+            kind="x_search", count=task.limits.max_results, results=tweets,
+            max_execution_time=task.limits.max_wall_seconds,
+            process_time=attempt.observed_seconds, successful=output is not None)
+
+    search_results = tuple({"title": result.title, "link": snapshot_url(result.doc_id),
+                            "snippet": result.snippet} for result in results)
+    return upstream.UpstreamResponse(
+        kind="ai_search", mode=task.ai_mode, count=task.limits.max_results,
+        tools=("Web Search",),
+        result_type=(upstream.RESULT_TYPE_ONLY_LINKS if task.result_type == "links"
+                     else upstream.RESULT_TYPE_LINKS_WITH_FINAL_SUMMARY),
+        search_results=search_results, texts={"summary": summary},
+        max_execution_time=task.limits.max_wall_seconds,
+        process_time=attempt.observed_seconds, successful=output is not None)
+
+
+def upstream_score_for(attempt: TaskAttempt, *, snapshot: SnapshotManifest,
+                       components: tuple[float, ...]) -> upstream.UpstreamScore:
+    """Score one attempt through the pinned upstream components."""
+    response = _upstream_response(attempt, snapshot=snapshot)
+    return upstream.score_response(response, components,
+                                   penalty_names=KATA_APPLICABLE_PENALTIES,
+                                   apply_performance=False)
 
 
 def score_attempts(attempts: list[TaskAttempt], *, snapshot: SnapshotManifest,
@@ -173,6 +297,8 @@ def score_attempts(attempts: list[TaskAttempt], *, snapshot: SnapshotManifest,
     latency = 0.0
     self_reported_calls = 0
     self_reported_tokens = 0
+    per_task: list[dict] = []
+    gated_tasks = 0
 
     for attempt in scorable:
         weight = _task_weight(attempt.task)
@@ -181,19 +307,37 @@ def score_attempts(attempts: list[TaskAttempt], *, snapshot: SnapshotManifest,
         # the full timeout and then returns garbage did consume that time.
         latency += attempt.observed_seconds
         if attempt.output is None:
-            continue   # an invalid run contributes 0 quality but still consumes its task weight
+            # An invalid run contributes 0 quality but still consumes its task weight. It is not
+            # sent through the upstream components at all: there is no response to score, and
+            # feeding an empty one would report a penalty for a shape the candidate never produced.
+            per_task.append({"task_id": attempt.task.task_id, "reward": 0.0,
+                             "reason": (attempt.error.value if attempt.error else "no output")})
+            continue
         output = attempt.output
         self_reported_calls += output.usage.provider_calls
         self_reported_tokens += output.usage.tokens
 
-        if attempt.task.search_type == "ai_search":
-            content, summary = _relevance(output, snapshot, attempt.task)
-            quality = (AI_QUALITY_WEIGHTS["content_relevance"] * content
-                       + AI_QUALITY_WEIGHTS["summary_relevance"] * summary)
-        else:
-            # X quality is content relevance only, per the upstream breakdown.
-            quality, _ = _relevance(output, snapshot, attempt.task)
-        weighted_quality += weight * quality
+        content, summary_relevance = _relevance(output, snapshot, attempt.task)
+        # X quality is content relevance only, per the upstream breakdown; AI search carries both
+        # and the adapter applies the 0.60/0.40 split (or (1.0, 0.0) for a links-only request).
+        components = ((content,) if attempt.task.search_type == "x_search"
+                      else (content, summary_relevance))
+        score = upstream_score_for(attempt, snapshot=snapshot, components=components)
+        weighted_quality += weight * score.reward
+        if score.quality_gate <= 0.0 < score.reward:
+            gated_tasks += 1
+        per_task.append({
+            "task_id": attempt.task.task_id,
+            "search_type": attempt.task.search_type,
+            "ai_mode": attempt.task.ai_mode,
+            "pool_share": round(score.pool_share, 6),
+            "content_relevance": round(content, 6),
+            "summary_relevance": round(summary_relevance, 6),
+            "reward": round(score.reward, 6),
+            "quality_gate": round(score.quality_gate, 6),
+            "penalties": {name: round(value, 6) for name, value in score.penalties.items()
+                          if value > 0},
+        })
 
         truth = snapshot.relevant(attempt.task.task_id)
         returned = {result.doc_id for result in output.results}
@@ -244,6 +388,16 @@ def score_attempts(attempts: list[TaskAttempt], *, snapshot: SnapshotManifest,
             "self_reported_tokens": self_reported_tokens,
             "relay_billed_calls": totals["provider_calls"],
             "relay_billed_tokens": totals["tokens"],
+            # Which upstream components produced the quality signal, and which did not. Stated in
+            # the result rather than only in this file's comments, because a reader comparing a
+            # Kata score to an upstream one needs to know what was applied without reading the
+            # source.
+            "upstream_commit": upstream_commit(),
+            "upstream_penalties_applied": list(KATA_APPLICABLE_PENALTIES),
+            "upstream_penalties_excluded": list(KATA_EXCLUDED_PENALTIES),
+            "upstream_performance_multiplier_applied": False,
+            "quality_gated_tasks": gated_tasks,
+            "per_task": per_task,
         },
     )
 

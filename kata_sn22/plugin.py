@@ -46,6 +46,7 @@ from kata_sn22.manifests import (
     benchmark_identity,
 )
 from kata_sn22.protocol import (
+    DEFAULT_RESULTS_PER_TASK,
     MAX_OUTPUT_BYTES,
     PROTOCOL_VERSION,
     ErrorClass,
@@ -208,7 +209,7 @@ class Sn22DesearchPlugin(SubnetPlugin):
             max_wall_seconds=int(config.get("max_wall_seconds") or 120),
             max_provider_calls=int(config.get("max_provider_calls") or 8),
             max_tokens=int(config.get("max_tokens") or 20_000),
-            max_results=int(config.get("max_results") or 20),
+            max_results=int(config.get("max_results") or DEFAULT_RESULTS_PER_TASK),
         )
         tasks = tuple(fixtures.tasks_for(manifest, limits=limits))
         for task in tasks:
@@ -432,6 +433,9 @@ class Sn22DesearchPlugin(SubnetPlugin):
                             help="Token quota per task per contestant.")
         parser.add_argument("--sn22-max-wall-seconds", type=int, default=120,
                             help="Wall-clock ceiling per task.")
+        parser.add_argument("--sn22-max-results", type=int, default=DEFAULT_RESULTS_PER_TASK,
+                            help="Results each task asks for. Both a request and a ceiling: "
+                                 "fewer takes the upstream count penalty, more is rejected.")
 
     def build_challenge_config(self, args) -> dict:
         """Explicit values only. A default that silently decides paid work is a defect (plan §4)."""
@@ -440,6 +444,7 @@ class Sn22DesearchPlugin(SubnetPlugin):
             "max_provider_calls": int(getattr(args, "sn22_max_provider_calls", 8)),
             "max_tokens": int(getattr(args, "sn22_max_tokens", 20_000)),
             "max_wall_seconds": int(getattr(args, "sn22_max_wall_seconds", 120)),
+            "max_results": int(getattr(args, "sn22_max_results", DEFAULT_RESULTS_PER_TASK)),
         }
 
     def challenge_result_json(self, result) -> dict:

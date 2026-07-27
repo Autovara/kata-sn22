@@ -173,15 +173,35 @@ def _medium(task: Task, snapshot: SnapshotManifest) -> bytes:
                      cite=(first,), calls=1, tokens=220, elapsed=2.0, snapshot=snapshot)
 
 
+def _fill_to_requested(doc_ids: tuple[str, ...], task: Task,
+                       snapshot: SnapshotManifest) -> tuple[str, ...]:
+    """Pad a result list up to the number of results the task asked for.
+
+    A strong agent returns what it was asked for: the relevant documents first, then its next-best
+    candidates. Without the padding a perfect answer would still take the upstream count penalty for
+    returning two results when five were requested, and the ladder would measure completeness
+    against a target nobody could reach.
+    """
+    remaining = [document.doc_id for document in snapshot.documents
+                 if document.doc_id not in doc_ids]
+    needed = max(0, task.limits.max_results - len(doc_ids))
+    return tuple(doc_ids) + tuple(sorted(remaining)[:needed])
+
+
 def _strong(task: Task, snapshot: SnapshotManifest) -> bytes:
-    """Finds every relevant document, summarizes them, cites them all, and is quicker about it."""
-    truth = sorted(snapshot.relevant(task.task_id))
+    """Finds every relevant document, returns the full requested count, cites the relevant ones.
+
+    Citations cover only the genuinely relevant documents, not the padding: citing a filler would
+    be claiming support the snapshot does not give, which is what ``sn22_citation_precision``
+    exists to catch — and the strong reference must be the one submission that never does it.
+    """
+    truth = tuple(sorted(snapshot.relevant(task.task_id)))
     if not truth:
         return _response(task, doc_ids=(), summary="No relevant documents were found.",
                          calls=1, tokens=200, elapsed=1.0, snapshot=snapshot)
     titles = " ".join((snapshot.document(d).title if snapshot.document(d) else "") for d in truth)
-    return _response(task, doc_ids=tuple(truth), summary=titles, cite=tuple(truth),
-                     calls=1, tokens=210, elapsed=1.0, snapshot=snapshot)
+    return _response(task, doc_ids=_fill_to_requested(truth, task, snapshot), summary=titles,
+                     cite=truth, calls=1, tokens=210, elapsed=1.0, snapshot=snapshot)
 
 
 def _invalid(task: Task, _snapshot: SnapshotManifest) -> bytes:

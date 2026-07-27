@@ -1,0 +1,462 @@
+import asyncio
+import itertools
+import os
+import sys
+import time
+from traceback import print_exception
+from typing import Optional, Tuple
+
+import bittensor as bt
+import numpy as np
+from bittensor.core.metagraph import AsyncMetagraph
+
+from desearch.miner_config import (
+    SEARCH_TYPES,
+    SearchType,
+    default_miner_manifest,
+    lane_key,
+    normalize_miner_manifest,
+)
+from desearch.protocol import IsAlive, SearchMode
+from desearch.redis.redis_client import close_redis, initialize_redis
+from desearch.redis.utils import (
+    load_moving_averaged_scores,
+    save_moving_averaged_scores,
+)
+from desearch.utils import resync_metagraph
+from neurons.validators import env
+from neurons.validators.base_validator import AbstractNeuron
+from neurons.validators.clients.utility_api_client import UtilityAPIClient
+from neurons.validators.config import add_args, check_config, config
+from neurons.validators.proxy.uid_manager import UIDManager
+from neurons.validators.scoring import capacity, miner_db
+from neurons.validators.scoring.query_scheduler import QueryScheduler
+from neurons.validators.scoring.scoring_store import ScoringStore
+from neurons.validators.scoring.synthetic_query_generator import SyntheticQueryGenerator
+from neurons.validators.scoring.weights import init_wandb, set_weights
+from neurons.validators.scrapers.advanced_scraper_validator import (
+    AdvancedScraperValidator,
+)
+from neurons.validators.scrapers.x_scraper_validator import XScraperValidator
+
+
+class Neuron(AbstractNeuron):
+    @classmethod
+    def add_args(cls, parser):
+        add_args(cls, parser)
+
+    @classmethod
+    def config(cls):
+        return config(cls)
+
+    subtensor: "bt.AsyncSubtensor"
+    wallet: "bt.Wallet"
+    metagraph: "AsyncMetagraph"
+
+    loop: asyncio.AbstractEventLoop
+
+    advanced_scraper_validator: "AdvancedScraperValidator"
+    x_scraper_validator: "XScraperValidator"
+
+    moving_average_scores: np.ndarray = None
+    uid: int = None
+    utility_api: UtilityAPIClient
+    validator_identity: dict | None = None
+
+    uid_manager: UIDManager
+
+    def __init__(self):
+        self.config = Neuron.config()
+        check_config(self.config)
+        bt.logging(config=self.config, logging_dir=self.config.neuron.full_path)
+        bt.logging.set_config(self.config)
+        print(self.config)
+        bt.logging.info("neuron.__init__()")
+
+        self.advanced_scraper_validator = AdvancedScraperValidator(neuron=self)
+        self.x_scraper_validator = XScraperValidator(neuron=self)
+
+        self.available_uids = []
+        self.uid_manager = UIDManager()
+        capacity.set_router(self.uid_manager)
+        self.validator_identity = None
+        self.scoring_store: Optional[ScoringStore] = None
+        self.should_exit = False
+
+    async def initialize(self):
+        bt.logging.info(
+            f"Running validator for subnet: {self.config.netuid} on network: {self.config.subtensor.chain_endpoint}"
+        )
+
+        if self.config.neuron.offline:
+            from desearch.bittensor.dendrite import Dendrite
+            from desearch.bittensor.subtensor import Subtensor
+            from desearch.bittensor.wallet import Wallet
+
+            self.wallet = Wallet(config=self.config)
+            self.subtensor = Subtensor(config=self.config)
+            await self.subtensor.initialize()
+            self.metagraph = await self.subtensor.metagraph(self.config.netuid)
+            self.hotkeys = list(self.metagraph.hotkeys)
+
+            self.dendrite_list = [
+                Dendrite(wallet=self.wallet),
+                Dendrite(wallet=self.wallet),
+                Dendrite(wallet=self.wallet),
+            ]
+            self.isalive_dendrite = Dendrite(wallet=self.wallet)
+        else:
+            self.wallet = bt.Wallet(config=self.config)
+
+            self.subtensor = bt.AsyncSubtensor(
+                config=self.config, websocket_shutdown_timer=None
+            )
+            await self.subtensor.initialize()
+
+            self.metagraph = await self.subtensor.metagraph(self.config.netuid)
+
+            self.hotkeys = list(self.metagraph.hotkeys)
+
+            self.dendrite_list = [
+                bt.Dendrite(wallet=self.wallet),
+                bt.Dendrite(wallet=self.wallet),
+                bt.Dendrite(wallet=self.wallet),
+            ]
+            self.isalive_dendrite = bt.Dendrite(wallet=self.wallet)
+
+        self.dendrites = itertools.cycle(self.dendrite_list)
+
+        self.uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
+        self.validator_identity = self._build_validator_identity()
+
+        await initialize_redis()
+
+    def _build_validator_identity(self) -> dict:
+        hotkey = self.wallet.hotkey.ss58_address
+        coldkey = next(
+            (nr.coldkey for nr in self.metagraph.neurons if nr.hotkey == hotkey),
+            None,
+        )
+
+        identity = {
+            "uid": self.uid,
+            "hotkey": hotkey,
+            "coldkey": coldkey,
+            "netuid": self.config.netuid,
+        }
+
+        external_ip = getattr(self.config.axon, "external_ip", None)
+        port = getattr(self.config.axon, "port", None)
+
+        if external_ip:
+            identity["ip"] = external_ip
+        if port:
+            identity["port"] = port
+
+        return identity
+
+    async def sync_available_uids(self):
+        start_time = time.time()
+
+        try:
+            self.available_uids = await self.get_available_uids_is_alive()
+
+            await self.uid_manager.resync(
+                available_uids=self.available_uids, metagraph=self.metagraph
+            )
+        except Exception as e:
+            bt.logging.error(
+                f"sync_available_uids Failed to update available UIDs: {e}"
+            )
+
+        end_time = time.time()
+        execution_time = end_time - start_time
+        bt.logging.info(f"sync_available_uids finished in: {execution_time}s")
+
+    async def check_uid(self, axon, uid):
+        """Ping the miner's axon via IsAlive and register its declared
+        concurrency per search type. Miners that omit a manifest fall back
+        to the default concurrency (1 per type). IsAlive outcomes feed the
+        same reachability counter as scoring/organic calls, so a single
+        miss flips ``unreachable_since`` — one IsAlive cycle (~10 min) is
+        enough even without any scoring attempts."""
+
+        try:
+            response = await self.isalive_dendrite(
+                axon, IsAlive(), deserialize=False, timeout=5
+            )
+            if not response.is_success:
+                raise Exception(f"UID {uid} is not active")
+        except Exception:
+            for st in SEARCH_TYPES:
+                await capacity.note_call_result(uid, st, success=False)
+            raise
+
+        manifest_data = getattr(response, "manifest", None) or {}
+        try:
+            manifest = normalize_miner_manifest(manifest_data)
+        except Exception as e:
+            bt.logging.warning(f"UID {uid} bad manifest, using defaults: {e}")
+            manifest = default_miner_manifest()
+
+        hotkey = self.metagraph.hotkeys[uid]
+        coldkey = self.metagraph.neurons[uid].coldkey
+
+        for lane, declared in manifest.concurrency.by_lane().items():
+            await miner_db.register_miner(
+                uid=uid,
+                search_type=lane_key(lane),
+                declared=declared,
+                hotkey=hotkey,
+                coldkey=coldkey,
+            )
+
+        for st in SEARCH_TYPES:
+            await capacity.note_call_result(uid, st, success=True)
+
+        return axon
+
+    async def get_available_uids_is_alive(self):
+        uids = [uid.item() for uid in self.metagraph.uids]
+        group_count = 5
+        group_size = max(1, (len(uids) + group_count - 1) // group_count)
+
+        available_uids = []
+        unavailable_uids = []
+
+        for start in range(0, len(uids), group_size):
+            group = uids[start : start + group_size]
+            tasks = [self.check_uid(self.metagraph.axons[uid], uid) for uid in group]
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for uid, result in zip(group, results):
+                if not isinstance(result, Exception):
+                    available_uids.append(uid)
+                else:
+                    unavailable_uids.append(uid)
+
+        bt.logging.info(
+            f"Available UIDs: {available_uids}, total: {len(available_uids)}"
+        )
+        bt.logging.info(
+            f"Unavailable UIDs: {unavailable_uids}, total: {len(unavailable_uids)}"
+        )
+
+        return available_uids
+
+    async def get_random_miner(
+        self,
+        uid: Optional[int] = None,
+        search_type: Optional[SearchType] = None,
+        mode: Optional[SearchMode] = None,
+    ) -> Tuple[int, bt.AxonInfo]:
+        """Return (uid, axon) for the given uid, or a weighted-random miner."""
+        if uid is not None:
+            bt.logging.info(f"Run specific UID: {uid}")
+            return uid, self.metagraph.axons[uid]
+
+        selected_uid = self.uid_manager.get_miner_uid(
+            search_type=SearchType(search_type) if search_type else None,
+            mode=SearchMode(mode) if mode else None,
+        )
+
+        bt.logging.trace(f"Run random UID: {selected_uid} (search_type={search_type})")
+
+        return selected_uid, self.metagraph.axons[selected_uid]
+
+    async def update_moving_averaged_scores(self, uids, rewards):
+        try:
+            uids = np.asarray(uids, dtype=np.int64)
+            rewards = np.asarray(rewards, dtype=np.float32)
+
+            size = self.moving_averaged_scores.shape
+
+            # np.add.at is unbuffered, so duplicate UIDs accumulate correctly
+            # instead of overwriting each other.
+            scattered_rewards = np.zeros(size, dtype=np.float32)
+            counts = np.zeros(size, dtype=np.float32)
+            np.add.at(scattered_rewards, uids, rewards)
+            np.add.at(counts, uids, np.ones_like(rewards))
+            mask = counts > 0
+            scattered_rewards[mask] = scattered_rewards[mask] / counts[mask]
+
+            average_reward = scattered_rewards.mean()
+            bt.logging.info(f"Scattered reward: {average_reward:.6f}")
+
+            alpha = 0.5
+
+            self.moving_averaged_scores = (
+                alpha * scattered_rewards + (1 - alpha) * self.moving_averaged_scores
+            ).astype(np.float32)
+
+            await save_moving_averaged_scores(self.moving_averaged_scores)
+
+            bt.logging.info(
+                f"Moving averaged scores: {self.moving_averaged_scores.mean():.6f}"
+            )
+            return scattered_rewards
+        except Exception as e:
+            bt.logging.error(f"Error in update_moving_averaged_scores: {e}")
+            raise e
+
+    async def blocks_until_next_epoch(self):
+        bt.logging.info("Calculating block until next epoch")
+
+        current_block = await self.subtensor.get_current_block()
+        tempo = await self.subtensor.tempo(self.config.netuid, current_block)
+        return tempo - (current_block + self.config.netuid + 1) % (tempo + 1)
+
+    async def sync_metagraph(self):
+        while True:
+            try:
+                await asyncio.sleep(10 * 60)  # 10 minutes
+
+                bt.logging.info("Syncing metagraph and available UIDs")
+
+                sync_start_time = time.time()
+
+                # Ensure validator hotkey is still registered on the network.
+                await self.check_registered()
+
+                await resync_metagraph(self)
+                await self.sync_available_uids()
+
+                bt.logging.info(
+                    f"Completed syncing metagraph and available UIDs: {time.time() - sync_start_time:.2f} seconds"
+                )
+
+            except Exception as e:
+                bt.logging.error(f"Error in sync_metagraph: {e}")
+
+    async def sync(self):
+        """
+        Weight-setting loop. Runs set_weights when within the last 20 blocks
+        of an epoch.
+        """
+
+        while True:
+            try:
+                blocks_left = await self.blocks_until_next_epoch()
+
+                bt.logging.info(f"Blocks left until next epoch: {blocks_left}")
+
+                if blocks_left <= 20 and self.should_set_weights():
+                    weight_set_start_time = time.time()
+                    bt.logging.info("Setting weights as per condition.")
+                    await set_weights(self)
+                    weight_set_end_time = time.time()
+                    bt.logging.info(
+                        f"Weight setting execution time: {weight_set_end_time - weight_set_start_time:.2f} seconds"
+                    )
+                    await asyncio.sleep(300)
+
+            except Exception as e:
+                bt.logging.error(f"Error in validator sync: {e}")
+
+            await asyncio.sleep(60)
+
+    async def check_registered(self):
+        if not await self.subtensor.is_hotkey_registered(
+            netuid=self.config.netuid,
+            hotkey_ss58=self.wallet.hotkey.ss58_address,
+        ):
+            bt.logging.error(
+                f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}."
+                f" Please register the hotkey using `btcli subnets register` before trying again"
+            )
+            sys.exit()
+
+    def should_set_weights(self) -> bool:
+        if self.config.neuron.disable_set_weights:
+            bt.logging.info("Weight setting is disabled by configuration.")
+            return False
+
+        return True
+
+    async def start(self):
+        try:
+            bt.logging.info("Starting Neuron")
+
+            await self.initialize()
+
+            os.makedirs(os.path.dirname(env.MINER_DB_PATH), exist_ok=True)
+            await miner_db.initialize(env.MINER_DB_PATH)
+
+            await self.sync_available_uids()  # Initial sync
+
+            self.loop = asyncio.get_event_loop()
+
+            init_wandb(self)
+
+            # Init Weights.
+            bt.logging.debug("loading", "moving_averaged_scores")
+            self.moving_averaged_scores = await load_moving_averaged_scores(
+                self.metagraph, self.config
+            )
+            bt.logging.debug(str(self.moving_averaged_scores))
+
+            scoring_store = ScoringStore()
+            self.scoring_store = scoring_store
+
+            utility_api = UtilityAPIClient(
+                base_url=self.config.neuron.utility_api_url,
+                wallet=self.wallet,
+            )
+            self.utility_api = utility_api
+
+            generator = SyntheticQueryGenerator()
+
+            validators = {
+                "ai_search": self.advanced_scraper_validator,
+                "x_search": self.x_scraper_validator,
+            }
+
+            query_scheduler = QueryScheduler(
+                neuron=self,
+                generator=generator,
+                scoring_store=scoring_store,
+                validators=validators,
+            )
+
+            self.loop.create_task(self.sync_metagraph())
+            self.loop.create_task(self.sync())
+            self.loop.create_task(query_scheduler.run())
+            self.loop.create_task(self.run_unreachable_decay_loop())
+
+        except KeyboardInterrupt:
+            self.axon.stop()
+            bt.logging.success("Validator killed by keyboard interrupt.")
+            sys.exit()
+        except Exception as err:
+            # In case of unforeseen errors, the validator will log the error and quit
+            bt.logging.error("Error during validation", str(err))
+            bt.logging.debug(print_exception(type(err), err, err.__traceback__))
+            self.should_exit = True
+
+    async def run_unreachable_decay_loop(self) -> None:
+        """Tick verified-decay for unreachable miners every minute."""
+        while not self.should_exit:
+            try:
+                await capacity.decay_unreachable_tick()
+                await self.uid_manager.drop_unreachable()
+            except Exception as e:
+                bt.logging.error(f"[UnreachableDecay] {e}")
+            await asyncio.sleep(60)
+
+    async def stop(self):
+        bt.logging.info("Stopping Neuron")
+
+        await close_redis()
+
+        await miner_db.close()
+
+        if hasattr(self, "utility_api"):
+            await self.utility_api.close()
+
+        await self.subtensor.close()
+
+        for dendrite in self.dendrite_list:
+            await dendrite.aclose_session()
+
+        await self.isalive_dendrite.aclose_session()

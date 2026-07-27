@@ -9,6 +9,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6"]
+# Only the parity harness needs these: it imports the pinned upstream under tools/upstream_shim.py
+# to record what the real upstream computes. The lane runtime imports kata_sn22.upstream_adapter,
+# which has no third-party dependency, so none of this reaches production.
+parity = ["pytest>=8.0", "ruff>=0.6", "pydantic>=2.0", "pytz", "numpy"]
 
 # Discovered by the Kata platform via the kata.subnets entry-point group.
 [project.entry-points."kata.subnets"]
@@ -27,9 +31,21 @@ kata = { path = "../kata", editable = true }
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# The pinned upstream snapshot is EVIDENCE, not our source. Linting it would be meaningless (it is
+# someone else's style) and formatting it would break the tree digest the parity gate depends on.
+extend-exclude = ["upstream"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The vendored upstream ships its own test suite. It is part of the pinned tree and must stay
+# byte-identical, but it is not ours to run: it needs bittensor, a wallet and a network.
+norecursedirs = ["upstream", ".venv", "dist"]
+filterwarnings = [
+    # Raised while importing the pinned upstream's pydantic models under the parity shim. Not ours
+    # to fix, and pinning the tree means it cannot be fixed here without invalidating the evidence.
+    "ignore:.*allow_mutation.*:DeprecationWarning",
+    "ignore::pydantic.warnings.PydanticDeprecatedSince20",
+]
