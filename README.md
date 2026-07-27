@@ -27,14 +27,40 @@ scoring plugs in behind these same methods later, with no change to Kata's core.
 
 ```
 kata_sn22/
-  plugin.py    the SubnetPlugin methods (allowlist env, NOISY/non-cacheable king, stub scorer)
-  __init__.py  builds and registers the SN22_DESEARCH_PLUGIN singleton
+  protocol.py       the frozen submission contract: task/output schema, limits, error classes
+  manifests.py      the sealed query / snapshot / usage manifests and the benchmark identity
+  scoring.py        the seven ordered rank signals and the promotion comparator
+  fake_provider.py  an offline relay over the sealed snapshot, with quotas and its own billing
+  fixtures.py       the fixed weak/medium/strong/invalid/malicious reference submissions
+  plugin.py         the SubnetPlugin methods (stub; replaced in SN22-3)
+  __init__.py       lazily exposes the plugin so the protocol layer imports on any core
 ```
+
+## The evaluation protocol (SN22-2)
+
+Everything except `plugin.py` is the frozen evaluation contract, and it is deliberately independent
+of the Kata core: it imports nothing from `kata`, touches no network, and can be reviewed and
+calibrated before a lane exists to run it. See `KATA-SN22-ACTIVATION-PLAN.md` §5 for the design.
+
+Three properties are worth knowing before reading the code:
+
+- **A challenge is sealed.** The queries are drawn deterministically from a versioned pool by an
+  HMAC of the round seed, and travel publicly as a *commitment* (a digest plus the category mix) so
+  nobody can pre-compute answers. The corpus is frozen for the round, so an identical relay request
+  from either contestant returns identical content. Both are hashed into one benchmark identity
+  alongside the judge policy, model identity, upstream commit and plugin revision.
+- **No ranked signal comes from the candidate.** Cost is taken from the relay's usage manifest and
+  latency from the lane's own clock, because a candidate reporting its own spend has every reason to
+  report zero. A citation counts only if the snapshot holds that document, it genuinely answers that
+  query, *and* the agent actually returned it.
+- **Promotion is lexicographic, not a weighted sum.** Validity, then quality, then citation
+  precision, coverage, invalid runs, cost, latency. A weighted sum would let a candidate buy a
+  quality win with unlimited spend.
 
 ## Not yet wired
 
-This plugin does not currently load against the latest engine. Its imports
-(`kata.packages.plugin`, `kata.packages.registry`) target an older module layout that the current
-`../kata` no longer ships. Treat this as a reference for the plugin shape, not as a working lane. The
-`pyproject.toml` already declares the `kata.subnets` entry point, so once the imports are updated to
-the current engine the platform can discover it with no core change.
+`plugin.py` does not load against the latest engine — its imports (`kata.packages.plugin`,
+`kata.packages.registry`) target a module layout the current `../kata` no longer ships. The package
+therefore resolves plugin symbols lazily, so importing the protocol layer works regardless. SN22-3
+rewrites the plugin against the current core and the protocol above; its two test modules are
+skipped until then. The `pyproject.toml` already declares the `kata.subnets` entry point.
