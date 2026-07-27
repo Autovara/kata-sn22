@@ -427,3 +427,129 @@ def test_a_result_with_no_cards_is_not_reported_as_isolated():
         candidate_card = None
 
     assert plugin.challenge_result_json(_Empty())["isolated"] is False
+
+
+# ---- quota cannot be bypassed by concurrency or retry (plan §9 "cost and recovery") -------------
+
+def test_parallel_requests_cannot_exceed_the_challenge_reservation(world, tmp_path):
+    """The reservation is a HARD ceiling, and concurrency is how a check-then-act ceiling fails.
+
+    Billing is a read-modify-write over shared counters. Without serialization, N threads all read
+    "served = 9" against a reservation of 10 and all proceed — the classic overspend, and on a
+    metered lane every extra call is real money. Threads rather than a mocked lock because the race
+    is the thing being tested.
+    """
+    import threading
+
+    _manifest, snapshot = world
+    reservation = 10
+    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", reservation_calls=reservation)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    with relay_server.RelayServer(gateway, workdir) as server:
+        # Per-task quotas deliberately far above the reservation, so ONLY the reservation can bound
+        # this. If the challenge ceiling were not enforced, all 40 calls would land.
+        capabilities = [gateway.issue(variant=f"v{i}", task_id="t000", max_calls=100)
+                        for i in range(4)]
+        served = []
+        errors = []
+
+        def _hammer(capability):
+            for _ in range(10):
+                try:
+                    relay_client.search("emissions", capability=capability.token,
+                                        endpoint=server.endpoint)
+                    served.append(1)
+                except relay_client.RelayError:
+                    errors.append(1)
+
+        threads = [threading.Thread(target=_hammer, args=(c,)) for c in capabilities]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+
+        assert len(served) == reservation, f"served {len(served)} against a cap of {reservation}"
+        assert errors, "some requests must have been refused"
+        # The gateway's OWN billing record agrees — the ceiling bounded what was billed, not just
+        # what was returned.
+        totals = sum(record.provider_calls
+                     for record in gateway.usage_manifest().records)
+        assert totals == reservation
+
+
+def test_parallel_requests_cannot_exceed_a_PER_TASK_quota(world, tmp_path):
+    """The same race one level down: a single capability hammered from many threads."""
+    import threading
+
+    _manifest, snapshot = world
+    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", reservation_calls=1000)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    with relay_server.RelayServer(gateway, workdir) as server:
+        capability = gateway.issue(variant="king", task_id="t000", max_calls=5)
+        served = []
+
+        def _hammer():
+            for _ in range(10):
+                try:
+                    relay_client.search("emissions", capability=capability.token,
+                                        endpoint=server.endpoint)
+                    served.append(1)
+                except relay_client.RelayError:
+                    pass
+
+        threads = [threading.Thread(target=_hammer) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+
+    assert len(served) == 5
+
+
+def test_retrying_an_exhausted_capability_never_grants_another_call(world, tmp_path):
+    """Retry is the other bypass: a refusal must be terminal, not a rate limit to wait out."""
+    _manifest, snapshot = world
+    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", reservation_calls=1000)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    with relay_server.RelayServer(gateway, workdir) as server:
+        capability = gateway.issue(variant="king", task_id="t000", max_calls=2)
+        for _ in range(2):
+            relay_client.search("emissions", capability=capability.token,
+                                endpoint=server.endpoint)
+        for _ in range(20):
+            with pytest.raises(relay_client.RelayError):
+                relay_client.search("emissions", capability=capability.token,
+                                    endpoint=server.endpoint)
+        assert relay_client.quota(capability.token, endpoint=server.endpoint)["used"] == 2
+
+    # A refused call is not billed: the ledger must not grow with attempts.
+    assert sum(r.provider_calls for r in gateway.usage_manifest().records) == 2
+
+
+def test_a_second_capability_for_the_same_task_does_not_multiply_the_quota(world, tmp_path):
+    """Per-task quotas would be meaningless if a contestant could simply be issued another one —
+    which is why minting is the LANE's operation and absent from the wire protocol entirely."""
+    _manifest, snapshot = world
+    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", reservation_calls=3)
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    with relay_server.RelayServer(gateway, workdir) as server:
+        first = gateway.issue(variant="king", task_id="t000", max_calls=2)
+        second = gateway.issue(variant="king", task_id="t000", max_calls=2)
+        served = 0
+        for capability in (first, second):
+            for _ in range(2):
+                try:
+                    relay_client.search("emissions", capability=capability.token,
+                                        endpoint=server.endpoint)
+                    served += 1
+                except relay_client.RelayError:
+                    pass
+    # Four calls were attempted across two capabilities; the CHALLENGE reservation still bound them.
+    assert served == 3

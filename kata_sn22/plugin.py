@@ -22,6 +22,8 @@ but within a world, results are reproducible and auditable, which is what the pl
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import subprocess
@@ -86,7 +88,11 @@ PROMOTION_MARGINS: dict[str, float] = {
     "sn22_coverage": 0.01,
     "sn22_invalid_runs": 0.0,         # an integer count
     "sn22_cost_units": 1.0,           # one provider call of slack
-    "sn22_latency_seconds": 2.0,      # wall clock, by far the noisiest signal here
+    # Wall clock, by far the noisiest signal here — and note it is a SUM OVER TASKS, not a per-task
+    # figure. Per-task jitter therefore accumulates: at 8 tasks, 0.25s of jitter each already spends
+    # this whole margin. So this number is not independent of `task_count`, and §5.5 must calibrate
+    # the two TOGETHER rather than picking a margin and a task count separately.
+    "sn22_latency_seconds": 2.0,
 }
 
 
@@ -258,6 +264,35 @@ class Sn22DesearchPlugin(SubnetPlugin):
     def benchmark_identity(self, problems: Sn22Problems) -> str:
         """NON-EMPTY: this challenge is reproducible, and this hash says which one it was."""
         return problems.identity
+
+    def execution_order(self, *, problems: Sn22Problems,
+                        variants: tuple[str, ...]) -> tuple[str, ...]:
+        """Permute who runs first, deterministically per challenge (plan §5.2 item 5).
+
+        SN22 ranks ``sn22_latency_seconds``, measured by the lane's own clock. Contestants run one
+        after another on one host, so the first to run meets a colder cache and a different
+        neighbour than the second. Fixed king-then-challenger order puts that difference on the same
+        side EVERY round — a systematic bias, not noise, and averaging more rounds does not remove
+        a constant.
+
+        Derived from the sealed challenge's own identity rather than from an RNG, for two reasons:
+
+        * **an auditor must be able to reproduce it.** Re-running the challenge from its seed has to
+          reproduce the whole challenge, order included, or "reproducible" is not true;
+        * **a miner must not be able to predict it.** The identity hashes the secret query manifest,
+          so predicting the order means already holding the queries — at which point the order is
+          the least of the problems.
+
+        Sorting by an HMAC keyed on the identity gives both: fixed for one challenge, unpredictable
+        across them, and uniform over many.
+        """
+        if len(variants) < 2:
+            return tuple(variants)
+        key = problems.identity.encode("utf-8")
+        return tuple(sorted(
+            variants,
+            key=lambda label: hmac.new(key, label.encode("utf-8"), hashlib.sha256).hexdigest(),
+        ))
 
     # ---- running a contestant -------------------------------------------------------------------
     def run_candidate(self, *, agent_path: str, problems: Sn22Problems,
