@@ -41,6 +41,8 @@ from kata.plugins.contract import (
 )
 
 from kata_sn22 import fixtures, relay_server, sandbox
+from kata_sn22.execution import policy as execution_policy
+from kata_sn22.execution import tee_execution_enabled
 from kata_sn22.gateway import GatewayDenied, Sn22Gateway
 from kata_sn22.manifests import (
     QueryManifest,
@@ -145,6 +147,14 @@ def _monotonic() -> float:
 #: unconfined execution — plan §6.1 is not a preference.
 REQUIRE_SANDBOX_ENV = "KATA_SN22_REQUIRE_SANDBOX"
 
+#: Where the attested sealed room answers. Absent means no room, and under the ``tee`` backend that
+#: is a refusal rather than a fallback.
+ROOM_ENDPOINT_ENV = "KATA_SN22_TEE_ROOM_URL"
+
+
+def _room_configured() -> bool:
+    return bool(os.environ.get(ROOM_ENDPOINT_ENV, "").strip())
+
 
 def _sandbox_required() -> bool:
     return os.environ.get(REQUIRE_SANDBOX_ENV, "").strip().lower() not in ("", "0", "false", "no")
@@ -228,18 +238,27 @@ class Sn22DesearchPlugin(SubnetPlugin):
 
     # ---- identity and environment ---------------------------------------------------------------
     def environment_spec(self) -> EnvSpec:
-        """The candidate reaches the relay and nothing else, and holds no provider credential.
+        """The candidate reaches one gateway and nothing else, and holds no VALIDATOR credential.
 
-        ``required_secrets`` is deliberately EMPTY. SN22's providers (apify, openai, scrapingdog)
-        are reached by the trusted gateway on the candidate's behalf under a short-lived
-        capability, so a provider key never enters the sandbox — plan §6.1. Declaring one here
-        would put it there.
+        Two backends, and the credential story differs between them — which is exactly why the
+        backend is declared here rather than assumed:
+
+        * **``tee``** (production): the agent runs in the attested sealed room and funds its own
+          search and inference with ITS OWN credential, sealed to its exact bundle and decrypted
+          only inside the room. The validator handles ciphertext and pays for nothing.
+        * **``sandbox``** (development and §5.5 calibration): the lane's own relay serves the sealed
+          corpus locally under `bwrap`.
+
+        ``required_secrets`` is EMPTY under both. Under ``tee`` the miner's key is a sealed bundle
+        artifact the ROOM opens, never an environment variable the platform hands out; under
+        ``sandbox`` there is no provider call to make. Declaring a secret here would put a validator
+        credential within reach of candidate code, which is the one thing §6.1 forbids outright.
         """
         return EnvSpec(
             network="relay_only",
             allowed_hosts=(),
             required_secrets=(),
-            execution="sandbox",
+            execution="tee" if tee_execution_enabled() else "sandbox",
             resources={"protocol_version": PROTOCOL_VERSION},
         )
 
@@ -313,6 +332,18 @@ class Sn22DesearchPlugin(SubnetPlugin):
         agent_py = Path(agent_path).expanduser().resolve() / "agent.py"
         if not agent_py.is_file():
             raise Sn22AgentError(f"submission has no agent.py at {agent_py}")
+
+        # The declared backend and the executed backend must agree. A lane whose EnvSpec says "tee"
+        # while its runner quietly executes locally is the worst of both: the operator believes the
+        # miner is funding its own calls inside an attested room, and in fact untrusted code is
+        # running on the validator host against the lane's own relay. Refuse instead.
+        backend = self.environment_spec().execution
+        if backend == "tee" and not _room_configured():
+            raise Sn22AgentError(
+                f"execution backend is 'tee' but no sealed room is configured "
+                f"({ROOM_ENDPOINT_ENV} is unset). Set it, or select the development backend "
+                f"explicitly with {execution_policy.EXECUTION_BACKEND_ENV}=sandbox — this lane "
+                f"will not silently run an untrusted agent locally while declaring a TEE")
 
         variant = context.label or "candidate"
         gateway = Sn22Gateway(snapshot=problems.snapshot, challenge_id=problems.challenge_id,
