@@ -381,3 +381,49 @@ def test_the_gateway_quota_read_still_refuses_an_expired_capability(world, tmp_p
     clock["t"] = 100.0
     with pytest.raises(GatewayDenied):
         gateway.quota(capability.token)
+
+
+def test_the_published_result_records_whether_the_challenge_was_isolated(tmp_path):
+    """A canary must be able to check it, so it has to reach the published result.
+
+    Both sides, or nothing: a per-side flag would let a challenge where only one contestant was
+    confined read as a confined challenge — and the unconfined side is the one that matters.
+    """
+    plugin = Sn22DesearchPlugin()
+    problems = plugin.sample_problems(seed="isolation-json", config={"task_count": 1})
+    agent_dir = tmp_path / "sub"
+    agent_dir.mkdir()
+    (agent_dir / "agent.py").write_text("print('{}')\n", encoding="utf-8")
+
+    class _Context:
+        label = "king"
+        output_root = str(tmp_path)
+        progress = None
+
+    card = plugin.score(plugin.run_candidate(agent_path=str(agent_dir), problems=problems,
+                                             context=_Context()), problems)
+    assert card.metrics["isolated"] is sandbox.available()
+
+    class _Result:
+        benchmark_identity = problems.identity
+        challenge_id = problems.challenge_id
+        king_card = card
+        candidate_card = card
+
+    document = plugin.challenge_result_json(_Result())
+    assert document["isolated"] is sandbox.available()
+    assert document["challenge_id"] == problems.challenge_id
+    assert document["king"]["isolated"] is sandbox.available()
+
+
+def test_a_result_with_no_cards_is_not_reported_as_isolated():
+    """`all()` over an empty set is True, which would make a challenge that ran nothing look
+    confined. Stated as its own test because it is the exact shape of that mistake."""
+    plugin = Sn22DesearchPlugin()
+
+    class _Empty:
+        benchmark_identity = "x" * 64
+        king_card = None
+        candidate_card = None
+
+    assert plugin.challenge_result_json(_Empty())["isolated"] is False

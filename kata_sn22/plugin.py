@@ -351,7 +351,11 @@ class Sn22DesearchPlugin(SubnetPlugin):
             # priority that makes them meaningful.
             comparable=round(signals.sn22_weighted_quality, 8),
             passed=signals.sn22_valid_query_rate > 0.0,
-            metrics={**signals.as_metrics(), "detail": signals.detail},
+            # ``isolated`` rides on the card so it reaches the published result. It is not a signal
+            # and never ranks anything — it is the fact a canary must be able to check, because a
+            # challenge that ran unconfined looks identical to one that did not until somebody asks.
+            metrics={**signals.as_metrics(), "detail": signals.detail,
+                     "isolated": raw.isolated},
             payload=signals,
         )
 
@@ -528,6 +532,7 @@ class Sn22DesearchPlugin(SubnetPlugin):
             return {
                 "comparable": card.comparable,
                 "passed": card.passed,
+                "isolated": bool((getattr(card, "metrics", None) or {}).get("isolated", False)),
                 "signals": [
                     {"name": name, "value": getattr(signals, name),
                      "direction": "higher_is_better" if higher else "lower_is_better",
@@ -546,8 +551,18 @@ class Sn22DesearchPlugin(SubnetPlugin):
             "judge_policy_id": JUDGE_POLICY_ID,
             "upstream_commit": UPSTREAM_COMMIT,
             "benchmark_identity": getattr(result, "benchmark_identity", ""),
+            "challenge_id": getattr(result, "challenge_id", "") or getattr(result, "run_id", ""),
             "king": _card(getattr(result, "king_card", None)),
             "challenger": _card(getattr(result, "candidate_card", None)),
+            # BOTH sides, or the challenge was not isolated. A per-side flag would let a result
+            # where only one contestant was confined read as a confined challenge.
+            "isolated": all(
+                bool((getattr(card, "metrics", None) or {}).get("isolated", False))
+                for card in (getattr(result, "king_card", None),
+                             getattr(result, "candidate_card", None))
+                if card is not None) and any(
+                getattr(result, name, None) is not None
+                for name in ("king_card", "candidate_card")),
         }
 
     def render_challenge_text(self, result) -> str:
