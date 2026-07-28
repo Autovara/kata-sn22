@@ -4,7 +4,9 @@ The **SN22 (Desearch)** subnet plugin for the [Kata](../kata) competition platfo
 king-versus-challenger search-quality lane whose scoring components are a proven port of a pinned
 upstream commit.
 
-See `../KATA-SN22-ACTIVATION-PLAN.md` for the design and the phase gates this repo implements.
+See `../KATA-ARCHITECTURE.md` §6.3 for how this lane validates and scores, and
+`../historical/KATA-SN22-ACTIVATION-PLAN.md` for the phase gates it was built against (partly
+superseded: the sealed corpus and the separate submissions repository are both gone).
 
 ## What SN22 (Desearch) is
 
