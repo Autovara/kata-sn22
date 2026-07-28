@@ -643,3 +643,77 @@ def test_the_penalty_matrix_covers_the_penalties_it_can_provoke(task):
     for name in uncovered:
         penalty = next(p for p in validator.penalty_functions if p.name == name)
         assert _applied(penalty, synapse) == 1.0, f"{name} fires on a healthy answer"
+
+
+# ---- GATE: the seeded King is a valid incumbent ---
+
+KING = (Path(__file__).resolve().parents[2] / "kata" / "submissions" / "sn22__desearch"
+        / "miner" / "king-20260728-01" / "agent.py")
+
+
+@pytest.fixture
+def king_answer(monkeypatch):
+    """The seeded King's real output, produced by the real harness."""
+    from kata_sn22_sdk import broker as sdk_broker
+    from kata_sn22_sdk import harness
+
+    monkeypatch.setenv("SN22_BROKER_URL", "http://broker.internal")
+    monkeypatch.setenv("SN22_BROKER_CAPABILITY", "kcap_" + "0" * 32)
+    monkeypatch.delenv("SN22_RELAY_ENDPOINT", raising=False)
+    monkeypatch.setattr(sdk_broker.BrokerClient, "_call",
+                        lambda self, operation, payload: {"results": WEB_RESULTS})
+    return harness.run(AI_TASK_INPUT, agent_path=str(KING), stderr=io.StringIO())
+
+
+def test_the_seeded_king_scores(task, king_answer):
+    """A King that scored zero would make every duel meaningless.
+
+    The incumbent is the thing every challenger is normalised against -- ``combine_pool_scores``
+    divides by the pool total across BOTH contestants -- so an incumbent that scores nothing turns
+    the ranking into a formality, and it would look like unusually strong challengers rather than a
+    broken King. Scored against a fabricator, whose links the evaluator's own fetch cannot find.
+    """
+    from kata_sn22 import production_scorer as scorer
+
+    fabricated = {**king_answer, "search_results": [
+        {**source, "link": source["link"].replace("source-", "fabricated-")}
+        for source in king_answer["search_results"]]}
+
+    score = asyncio.run(scorer.score_pool(
+        pool="ai_search:fast", tasks=(task,),
+        king_answers={"t0": king_answer}, challenger_answers={"t0": fabricated},
+        deep_task_ids=frozenset({"t0"}), judge=_judge, fetch_pages=_fetch_pages,
+        process_times={(0, "t0"): 3.0, (1, "t0"): 3.0}))
+
+    assert score.king.q_weight > 0.0, "the seeded King scores nothing"
+    assert score.challenger.q_weight == 0.0
+
+
+def test_the_seeded_king_cites_every_source_it_returns(king_answer):
+    """Evidence is what makes a source count at all. An uncited King is a zero-scoring King, and
+    the failure is silent: sources are dropped before judging rather than marked down."""
+    sources = king_answer["search_results"]
+    assert sources, "the King returned no sources"
+    assert all(source.get("highlights") for source in sources), (
+        "the King returned a source with no highlights; it would be dropped before judging")
+
+
+def test_the_seeded_king_emits_its_prose_by_role(king_answer):
+    """The King must EMIT rather than return, and emit each graded role.
+
+    The streaming penalty itself is neutralised on the trusted side -- ``canonical_text_chunks``
+    re-chunks whatever arrives -- so this is not about chunk counts. What the trusted side cannot
+    invent is a role the agent never emitted: a missing ``final_summary`` is the block the
+    groundedness judge reads simply not existing, which scores zero rather than badly.
+    """
+    from kata_sn22_sdk import ScraperTextRole
+
+    # Read the wire names off the enum rather than restating them: FINAL_SUMMARY serialises as
+    # "summary", and a test that hardcoded the member name would pass on an agent emitting nothing.
+    expected = {role.value for role in
+                (ScraperTextRole.INTRO, ScraperTextRole.SEARCH_SUMMARY,
+                 ScraperTextRole.FINAL_SUMMARY)}
+    chunks = king_answer.get("text_chunks") or {}
+    assert set(chunks) == expected, sorted(chunks)
+    assert all(any(part.strip() for part in parts) for parts in chunks.values()), (
+        "the King emitted an empty role")
