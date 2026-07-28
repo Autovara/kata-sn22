@@ -19,4 +19,4 @@ WORKDIR /app
 COPY tee_profile.py .
 # Tell the generic server which profile to load.
 ENV KATA_TEE_PROFILE=tee_profile:Sn22TeeProfile
-# CMD is inherited from the base: python -m room.server
+# Production gunicorn CMD is inherited from the base.

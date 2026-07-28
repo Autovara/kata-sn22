@@ -150,18 +150,15 @@ def test_an_agent_can_import_the_relay_module_the_image_ships(profile):
 
 # ---- no operator-funded fallback ---------------------------------------------------------------
 
-def test_a_submission_with_no_sealed_credential_gets_no_inference(profile, tmp_path):
-    """Empty settings, never the lane's own key. A fallback would mean the validator silently
-    paying for a miner's inference -- the inversion the sealed room exists to prevent."""
+def test_a_submission_with_no_sealed_credential_is_refused_before_execution(profile, tmp_path):
+    """A keyless job can only burn room capacity and score zero, so reject it before Docker."""
     plugin, calls = profile
     (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
 
-    plugin.run(project_key=TASK, credential=None, bundle_root=str(tmp_path),
-               job_id=JOB_ID, bundle_sha256="c" * 64)
-
-    env = _env_of(calls[0])
-    assert env["SN22_INFERENCE_API_KEY"] == ""
-    assert env["SN22_INFERENCE_GATEWAY"] == ""
+    with pytest.raises(RuntimeError, match="sealed inference credential"):
+        plugin.run(project_key=TASK, credential=None, bundle_root=str(tmp_path),
+                   job_id=JOB_ID, bundle_sha256="c" * 64)
+    assert calls == []
 
 
 # ---- the agent container's confinement ----------------------------------------------------------
@@ -179,6 +176,9 @@ def test_the_agent_runs_confined(profile, credential, tmp_path):
     assert "--read-only" in argv
     assert ["--cap-drop", "ALL"] == argv[argv.index("--cap-drop"):argv.index("--cap-drop") + 2]
     assert "no-new-privileges" in argv
+    assert argv[argv.index("--user") + 1] == "65532:65532"
+    assert argv[argv.index("--pids-limit") + 1] == "64"
+    assert any(item.startswith("/tmp:rw,noexec,nosuid") for item in argv)
     assert "--memory" in argv and "--cpus" in argv
     # The sealed inference network, never the host's.
     from room.inference_network import INF_NET

@@ -1,6 +1,6 @@
 # kata-sn22
 
-The **SN22 (Desearch)** subnet plugin for the [Kata](../kata) competition platform: a sealed, paired
+The **SN22 (Desearch)** subnet plugin for the [Kata](../kata) competition platform: a paired
 king-versus-challenger search-quality lane whose scoring components are a proven port of a pinned
 upstream commit.
 
@@ -13,23 +13,25 @@ superseded: the sealed corpus and the separate submissions repository are both g
 Desearch is a search-quality subnet. An agent is given a query and answers it by retrieving from the
 web and X, and its answer is scored on how relevant and complete the results are. Upstream scores a
 whole population of miners against the live web every hour. Kata does something narrower and
-therefore fairer to reason about: two agents, one sealed challenge, the same secret queries and the
-same frozen corpus.
+therefore fairer to reason about: two agents, one committed challenge and the same secret queries.
+Both search live sources; the validator independently fetches and verifies their evidence against
+the same per-round cache.
 
 ## Layout
 
 ```
 kata_sn22/
-  protocol.py            the frozen submission contract: task/output schema, limits, error classes
-  manifests.py           the sealed query / snapshot / usage manifests and the benchmark identity
+  protocol.py            the versioned submission contract: task/output schema, limits, errors
+  manifests.py           query and usage commitments plus the benchmark identity
   scoring.py             the seven ordered rank signals and the promotion comparator
   upstream_adapter.py    the dependency-free port of the pinned upstream scoring components
   upstream_snapshot.py   identity and integrity of the vendored upstream tree
   parity.py              the parity contract: components, recorded cases, evidence checks
   parity_expectations.json   what the REAL upstream computed, recorded by a reviewer
-  gateway.py             the trusted provider gateway: capabilities, quotas, signed receipts
+  gateway.py             the recorded-canary/local relay: capabilities, quotas, signed receipts
   sandbox.py             the candidate execution jail (bwrap, no network, constructed environment)
-  fake_provider.py       an offline relay over the sealed snapshot, with quotas and its own billing
+  providers.py           live validator-owned page, judge, and tweet verification transports
+  execution/tee_room.py  remote room client and TDX attestation verification
   fixtures.py            the fixed weak/medium/strong/invalid/malicious reference submissions
   plugin.py              the SubnetPlugin implementation
 upstream/                the complete pinned upstream tree + UPSTREAM_MANIFEST.json
@@ -41,15 +43,13 @@ tools/
 
 ## Three properties worth knowing before reading the code
 
-- **A challenge is sealed.** Queries are drawn deterministically from a versioned pool by an HMAC of
-  the round seed and travel publicly as a *commitment* — a digest plus the category mix — so nobody
-  can pre-compute answers. The corpus is frozen for the round, so an identical relay request from
-  either contestant returns identical content. Both are hashed into one benchmark identity alongside
-  the judge policy, model identity, upstream commit and plugin revision.
-- **No ranked signal comes from the candidate.** Cost is taken from the relay's usage manifest and
-  latency from the lane's own clock, because a candidate reporting its own spend has every reason to
-  report zero. A citation counts only if the snapshot holds that document, it genuinely answers that
-  query, *and* the agent actually returned it.
+- **A challenge is committed.** Queries are drawn deterministically from a versioned pool and hashed
+  into the benchmark identity with the judge policy, model, upstream commit and plugin revision.
+  The web is deliberately not frozen; fairness comes from validator-owned verification and a page
+  cache shared by both contestants.
+- **No ranked signal trusts the candidate.** Cost comes from the attested in-room gateway summary
+  and latency from the validator's clock. A citation counts only if the validator fetched the page,
+  its claimed excerpts really appear there, and the agent actually returned it.
 - **Promotion is lexicographic, not a weighted sum.** Validity, then quality, then citation
   precision, coverage, invalid runs, cost, latency. A weighted sum would let a candidate buy a
   quality win with unlimited spend.
@@ -77,9 +77,8 @@ validator step that logs to W&B and writes a metagraph-sized array. Every input 
 executed. The parity report says so rather than leaving a reader to find out.
 
 Two upstream components are deliberately excluded from the Kata quality signal, and the challenge
-result declares it: `timeout_penalty` and `min_realistic_time_penalty` measure live provider latency,
-which a sealed offline snapshot does not have — and Kata already ranks latency as its own signal, so
-folding it into quality would let a fast agent outrank a better one.
+result declares it: `timeout_penalty` and `min_realistic_time_penalty` would double-count provider
+latency because Kata already ranks validator-observed latency as its own signal.
 
 ```bash
 uv run pytest                                        # everything except the executed-parity half
@@ -94,11 +93,13 @@ commit into `upstream/`, run `tools/vendor_upstream.py write`, re-record parity,
 diff**. A changed number there is an upstream behaviour change and has to be understood before the
 adapter is taught to agree with it.
 
-## Credential and execution boundary (SN22-4)
+## Credential and execution boundary
 
-A candidate never holds a provider key. It holds a capability — a short-lived token bound to one
-lane, one challenge, one variant and one task — and `gateway.py` makes the call on its behalf, bills
-it, and returns data with anything secret-shaped scrubbed. `sandbox.py` runs the submission under
-`bwrap` as uid 65534 with no network namespace and an environment *constructed from nothing* rather
-than filtered, and **refuses to run at all** where it cannot isolate: a submission that could not be
-confined has not been evaluated, and scoring it anyway would throw away the point.
+Production uses `KATA_SN22_EXECUTION_BACKEND=tee` (the safe default). The validator sends the exact
+bundle and one task to `KATA_SN22_ROOM_URL`; it accepts the answer only after `dcap-qvl` verifies a
+TDX quote, the image measurement is in `KATA_SN22_ROOM_MEASUREMENTS`, and the quote binds the nonce,
+task, bundle hash, answer and provenance. The miner's provider credential is sealed to that bundle
+and decrypted only in the room.
+
+The explicit `sandbox` backend is only for the recorded, free canary. It runs under `bwrap` as uid
+65534 with no network namespace and a constructed environment. It is never a production fallback.

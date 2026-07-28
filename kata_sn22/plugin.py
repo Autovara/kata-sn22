@@ -52,6 +52,7 @@ from kata_sn22.gateway import GatewayDenied, Sn22Gateway
 from kata_sn22.manifests import (
     QueryManifest,
     UsageManifest,
+    UsageRecord,
     benchmark_identity,
 )
 from kata_sn22.protocol import (
@@ -166,11 +167,21 @@ REQUIRE_SANDBOX_ENV = "KATA_SN22_REQUIRE_SANDBOX"
 
 #: Where the attested sealed room answers. Absent means no room, and under the ``tee`` backend that
 #: is a refusal rather than a fallback.
-ROOM_ENDPOINT_ENV = "KATA_SN22_TEE_ROOM_URL"
+ROOM_ENDPOINT_ENV = "KATA_SN22_ROOM_URL"
+ROOM_MAX_ATTEMPTS_ENV = "KATA_SN22_ROOM_MAX_ATTEMPTS"
 
 
 def _room_configured() -> bool:
     return bool(os.environ.get(ROOM_ENDPOINT_ENV, "").strip())
+
+
+def _resolve_room_max_attempts() -> int:
+    raw = os.environ.get(ROOM_MAX_ATTEMPTS_ENV, "3").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 3
+    return value if 1 <= value <= 5 else 3
 
 
 def _sandbox_required() -> bool:
@@ -440,6 +451,9 @@ class Sn22DesearchPlugin(SubnetPlugin):
                 f"({ROOM_ENDPOINT_ENV} is unset). Set it, or select the development backend "
                 f"explicitly with {execution_policy.EXECUTION_BACKEND_ENV}=sandbox — this lane "
                 f"will not silently run an untrusted agent locally while declaring a TEE")
+        if backend == "tee":
+            return self._run_candidate_in_tee(
+                agent_path=agent_path, problems=problems, context=context)
 
         variant = context.label or "candidate"
         gateway = Sn22Gateway(provider=self._search_provider,
@@ -493,6 +507,101 @@ class Sn22DesearchPlugin(SubnetPlugin):
         return Sn22RawRun(variant=variant, agent_path=str(agent_path),
                           attempts=tuple(attempts), usage=gateway.usage_manifest(),
                           isolated=sandbox.available())
+
+    def _run_candidate_in_tee(
+        self, *, agent_path: str, problems: Sn22Problems, context: RunContext
+    ) -> Sn22RawRun:
+        """Execute every task remotely and accept only quote-bound room answers."""
+        from kata_sn22.execution.tee_room import (
+            DcapQvlVerifier,
+            HttpRoomLauncher,
+            evaluate_candidate_in_room,
+            hash_bundle,
+            resolve_room_policy,
+            sealed_key_for_bundle,
+        )
+
+        bundle_root = Path(agent_path).expanduser().resolve()
+        variant = context.label or "candidate"
+        launcher = HttpRoomLauncher(os.environ[ROOM_ENDPOINT_ENV].strip())
+        policy = resolve_room_policy()
+        verifier = DcapQvlVerifier()
+        sealed_key = sealed_key_for_bundle(bundle_root)
+        bundle_sha256 = hash_bundle(bundle_root)
+        seen_nonces: set[bytes] = set()
+        attempts: list[TaskAttempt] = []
+        usage_records: list[UsageRecord] = []
+
+        for index, task in enumerate(problems.tasks, start=1):
+            project_key = json.dumps(task.as_input(), sort_keys=True, separators=(",", ":"))
+            started = _monotonic()
+            outcome = evaluate_candidate_in_room(
+                agent_ref=str(bundle_root),
+                project_key=project_key,
+                sealed_key_ref=sealed_key,
+                bundle_sha256=bundle_sha256,
+                policy=policy,
+                launcher=launcher,
+                verifier=verifier,
+                seen_nonces=seen_nonces,
+            )
+            observed = _monotonic() - started
+            if not outcome.accepted:
+                raise Sn22AgentError(f"sealed-room execution was rejected: {outcome.reason}")
+            report = outcome.report
+            if not isinstance(report, dict) or report.get("task_id") != task.task_id:
+                raise Sn22AgentError("sealed room returned a report for the wrong SN22 task")
+            if report.get("timed_out") is True:
+                attempts.append(TaskAttempt(
+                    task=task, error=ErrorClass.TIMEOUT, observed_seconds=observed))
+            elif report.get("truncated") is True:
+                attempts.append(TaskAttempt(
+                    task=task, error=ErrorClass.EXCESS_OUTPUT, observed_seconds=observed))
+            elif int(report.get("returncode", 0) or 0) != 0 and not report.get("answer"):
+                attempts.append(TaskAttempt(
+                    task=task, error=ErrorClass.CRASHED, observed_seconds=observed))
+            else:
+                answer = report.get("answer")
+                if not isinstance(answer, str):
+                    attempts.append(TaskAttempt(
+                        task=task, error=ErrorClass.INVALID_SCHEMA, observed_seconds=observed))
+                else:
+                    try:
+                        output = parse_task_output(answer.encode("utf-8"), task=task)
+                        attempts.append(TaskAttempt(
+                            task=task, output=output, observed_seconds=observed))
+                    except ProtocolError as exc:
+                        attempts.append(TaskAttempt(
+                            task=task, error=exc.error_class, observed_seconds=observed))
+
+            inference = (outcome.provenance or {}).get("inference_summary")
+            if isinstance(inference, dict):
+                usage_records.append(UsageRecord(
+                    variant=variant,
+                    task_id=task.task_id,
+                    provider_calls=max(0, int(inference.get("requests", 0) or 0)),
+                    tokens=max(0, int(inference.get("tokens", 0) or 0)),
+                    spend_usd=0.0,
+                ))
+            if context.progress is not None:
+                context.progress(ProgressUpdate(
+                    variant=variant,
+                    done=index,
+                    total=len(problems.tasks),
+                    state="scoring",
+                    metrics={"usable": sum(1 for attempt in attempts if attempt.usable)},
+                ))
+
+        return Sn22RawRun(
+            variant=variant,
+            agent_path=str(agent_path),
+            attempts=tuple(attempts),
+            usage=UsageManifest(
+                challenge_id=problems.challenge_id,
+                records=tuple(usage_records),
+            ),
+            isolated=True,
+        )
 
     @staticmethod
     def _reservation_calls(problems: Sn22Problems) -> int:
@@ -555,21 +664,116 @@ class Sn22DesearchPlugin(SubnetPlugin):
                       metrics=strong.as_metrics(), payload=strong),
         )
 
+    def preflight(self) -> list[dict[str, str]]:
+        """Fail before paid work unless verification and the declared backend are usable."""
+        from kata_sn22.execution.tee_room import (
+            ROOM_AUTH_SECRET_ENV,
+            DcapQvlVerifier,
+            resolve_room_policy,
+            validate_room_url,
+            verify_room_identity,
+        )
+        from kata_sn22.providers import APIFY_KEY_ENV, OPENAI_KEY_ENV, SCRAPINGDOG_KEY_ENV
+
+        issues: list[dict[str, str]] = []
+        verification_mode = os.environ.get(
+            "KATA_SN22_VERIFICATION_MODE", "live").strip().lower()
+        if verification_mode not in {"live", "recorded"}:
+            issues.append({
+                "level": "error",
+                "message": "KATA_SN22_VERIFICATION_MODE must be 'live' or 'recorded'.",
+            })
+        if verification_mode == "live":
+            for name in (SCRAPINGDOG_KEY_ENV, APIFY_KEY_ENV, OPENAI_KEY_ENV):
+                if not os.environ.get(name, "").strip():
+                    issues.append({
+                        "level": "error",
+                        "message": f"{name} is required for independent SN22 result verification.",
+                    })
+        try:
+            backend = self.environment_spec().execution
+        except ValueError as exc:
+            issues.append({"level": "error", "message": str(exc)})
+            return issues
+        if backend == "sandbox":
+            if verification_mode != "recorded":
+                issues.append({
+                    "level": "error",
+                    "message": (
+                        "The SN22 sandbox backend is a free canary/calibration path and requires "
+                        "KATA_SN22_VERIFICATION_MODE=recorded."
+                    ),
+                })
+            if _sandbox_required() and not sandbox.available():
+                issues.append({
+                    "level": "error",
+                    "message": f"{REQUIRE_SANDBOX_ENV}=1 but {sandbox.BWRAP} is unavailable.",
+                })
+            return issues
+
+        if verification_mode != "live":
+            issues.append({
+                "level": "error",
+                "message": (
+                    "The SN22 TEE backend requires KATA_SN22_VERIFICATION_MODE=live; "
+                    "recorded verification is restricted to the free sandbox canary."
+                ),
+            })
+        room_url = os.environ.get(ROOM_ENDPOINT_ENV, "").strip()
+        if not room_url:
+            issues.append({
+                "level": "error",
+                "message": f"{ROOM_ENDPOINT_ENV} is required for the SN22 TEE backend.",
+            })
+            return issues
+        if not os.environ.get(ROOM_AUTH_SECRET_ENV, "").strip():
+            issues.append({
+                "level": "error",
+                "message": f"{ROOM_AUTH_SECRET_ENV} is required to authenticate room runs.",
+            })
+        try:
+            validate_room_url(room_url)
+            policy = resolve_room_policy()
+            verify_room_identity(room_url, policy=policy, verifier=DcapQvlVerifier())
+        except RuntimeError as exc:
+            issues.append({"level": "error", "message": str(exc)})
+        return issues
+
     # ---- cost ------------------------------------------------------------------------------------
     def capacity_estimate(self, *, config: dict[str, Any]) -> dict[str, float]:
-        """A TRUE upper bound on what one challenge can cost, from this plugin's own config read.
+        """Hard upper bounds for one paired challenge.
 
-        Both contestants, every task, the full per-task call quota — the most the relay can be made
-        to spend before its own quotas refuse. Resolved from the same ``config`` the challenge runs
-        with, so the reservation cannot diverge from the execution.
+        Candidate inference runs in the miner-funded room, so the validator's paid dimensions are
+        its independent page fetches, judge calls and tweet re-scrapes. ``tee_runs`` still counts
+        the finite room resource. Every bound assumes both contestants, every task and the
+        costliest task type; the real mix can only be cheaper.
         """
+        from kata_sn22.upstream_adapter import MAX_SAMPLED_LINKS
+
         tasks = int(config.get("task_count") or 4)
-        calls = int(config.get("max_provider_calls") or 8)
-        tokens = int(config.get("max_tokens") or 20_000)
         variants = 2   # king and exactly one challenger
+        if os.environ.get("KATA_SN22_VERIFICATION_MODE", "live").strip().lower() == "recorded":
+            tee_runs = (
+                tasks * variants * _resolve_room_max_attempts()
+                if self.environment_spec().execution == "tee"
+                else 0
+            )
+            return {
+                "data_api_calls": 0.0,
+                "inference_calls": 0.0,
+                "scrape_units": 0.0,
+                "tee_runs": float(tee_runs),
+            }
+        results = int(config.get("max_results") or DEFAULT_RESULTS_PER_TASK)
         return {
-            "inference_calls": float(tasks * calls * variants),
-            "tokens": float(tasks * tokens * variants),
+            # One fetch per returned web result. The shared PageFetcher cache may reduce this, but
+            # unique URLs across every answer are the safe bound.
+            "data_api_calls": float(tasks * results * variants),
+            # At most MAX_SAMPLED_LINKS relevance calls plus one groundedness call per AI task.
+            "inference_calls": float(tasks * (min(results, MAX_SAMPLED_LINKS) + 1) * variants),
+            # An all-X challenge re-scrapes every returned tweet.
+            "scrape_units": float(tasks * results * variants),
+            "tee_runs": float(tasks * variants * _resolve_room_max_attempts()),
         }
 
     # ---- screening and review --------------------------------------------------------------------
@@ -589,6 +793,17 @@ class Sn22DesearchPlugin(SubnetPlugin):
             findings.append("agent.py must be a regular file")
         elif agent_py.stat().st_size > 1_000_000:
             findings.append("agent.py exceeds 1 MB")
+
+        if self.environment_spec().execution == "tee":
+            sealed_key = root / "sealed_inference_key"
+            try:
+                ciphertext = bytes.fromhex(sealed_key.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                ciphertext = b""
+            if len(ciphertext) < 32:
+                findings.append(
+                    "TEE submissions must include a non-trivial hexadecimal "
+                    "sealed_inference_key bound to this bundle")
 
         # Direct egress is pointless under relay_only and signals a submission that expects to reach
         # providers itself. Named modules only -- this is a screen, not a sandbox.
@@ -749,6 +964,16 @@ class Sn22DesearchPlugin(SubnetPlugin):
             "king": king,
             "challenger": entries[0] if entries else None,
             "entries": entries,
+            # Subnet-neutral canary code enforces this declarative contract only in paid mode.
+            # Positive quality/coverage plus attested provider calls prevents a byte-transparent
+            # route to an incompatible endpoint from looking like a successful live canary.
+            "canary_requirements": {
+                "provider_calls_per_side_min": 1,
+                "positive_signals": [
+                    "sn22_weighted_quality",
+                    "sn22_coverage",
+                ],
+            },
             # BOTH sides, or the challenge was not isolated. A per-side flag would let a result
             # where only one contestant was confined read as a confined challenge.
             "isolated": bool(cards) and all(card["isolated"] for card in cards),

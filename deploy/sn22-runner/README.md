@@ -45,6 +45,13 @@ amd64 whatever the operator's laptop is).
 | `KATA_SN22_ROOM_URL` | the lane | where this room answers |
 | `KATA_SN22_ROOM_MEASUREMENTS` | the lane | the measurement of the image built above — **this** is what stops the lane talking to an SN60 room, or an unattested one |
 
+The SN22 agent helper sends the versioned relay request
+`{"op":"search","query":"…","limit":N}` and expects a JSON object with a `results` array. The
+configured provider route must implement that contract, either directly or through a reviewed
+adapter. A raw OpenAI-compatible chat endpoint does **not** implement it merely because the generic
+gateway can forward bytes there. Treat the paid canary as failed unless both contestants retrieve
+live results through the configured route.
+
 ## Who pays for what
 
 The miner funds its own search and inference: its credential is sealed to its exact bundle,

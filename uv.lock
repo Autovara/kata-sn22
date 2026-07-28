@@ -21,6 +21,21 @@ wheels = [
 ]
 
 [[package]]
+name = "dcap-qvl"
+version = "0.5.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/11/a4/7cb9365d55d66eaa70a64962cf02a0630dd4420343c951993df1ab0e7331/dcap_qvl-0.5.3.tar.gz", hash = "sha256:1db47d48bab7b64138b00c4f07c8847a8c7b32e25e00924009befee32ed52fed", size = 263935, upload-time = "2026-06-15T13:16:55.823Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9e/4a/b85b409d17c001b72f5912ff0f78b072165658b1040f1a6d9a4cb3ef58d6/dcap_qvl-0.5.3-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:5a93a23854a4682f3728e34d1740120fde90b82423e22d285e5120319e5c720b", size = 2385438, upload-time = "2026-06-15T13:16:43.76Z" },
+    { url = "https://files.pythonhosted.org/packages/95/dd/480a61f3dda334f87d5d9d37ceb5e955c02ca1f531e9179b60edc1a028b1/dcap_qvl-0.5.3-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:30acb506214e51904ac2a89dc3e77ff428e83055d1b7d6c7fe60cbd44ee47ccb", size = 2259094, upload-time = "2026-06-15T13:16:45.876Z" },
+    { url = "https://files.pythonhosted.org/packages/23/49/ed663c75204fcc46c2bfc63e4d9c17e4ba8c060a6d143a0a852e44f32db9/dcap_qvl-0.5.3-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:17a7226494c40d212d0962e720c1928277d644ec55896d91682ceb6728fb96e1", size = 2538588, upload-time = "2026-06-15T13:16:47.664Z" },
+    { url = "https://files.pythonhosted.org/packages/85/c6/da9d4804426a95e0e1e4abd74c005f903be56ab22c29f58abae6a8d9d7d3/dcap_qvl-0.5.3-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8ac5c7b1102051f666a0d1bbd66ec0dd917ba942ae2ec402685fd3c6514a0aee", size = 2694390, upload-time = "2026-06-15T13:16:49.327Z" },
+    { url = "https://files.pythonhosted.org/packages/35/5f/dc6b6c7ca84bd7b4fa479d643b842b87a0863166bc55e94a9db74f11bf80/dcap_qvl-0.5.3-cp38-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:b7ac2b6f47e9000ca64354b412622f9cea06cd0c9eb7be9f16fa10a49fbb232a", size = 2535127, upload-time = "2026-06-15T13:16:51.086Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/9c/9eadd5b97996df0e9f1efa16bcdefcb77fe801024fb6afb3d666cb9c978c/dcap_qvl-0.5.3-cp38-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:bef8dac093a39ff2dd976e5758af54083971d1128e3d0735fb528a244fa8db97", size = 2692260, upload-time = "2026-06-15T13:16:52.818Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/b7/8f0ea7b9d380c7679d477d900481998749424e3b0bd5ebf662eaa10fc10b/dcap_qvl-0.5.3-cp38-abi3-win_amd64.whl", hash = "sha256:1498532d9225e0b363938201ea79a45e9901c8e3c38c5d3681e8e97b1182c3bb", size = 2128755, upload-time = "2026-06-15T13:16:54.408Z" },
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -46,6 +61,7 @@ name = "kata-sn22"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "dcap-qvl" },
     { name = "kata" },
 ]
 
@@ -64,6 +80,7 @@ parity = [
 
 [package.metadata]
 requires-dist = [
+    { name = "dcap-qvl", specifier = "==0.5.3" },
     { name = "kata", editable = "../kata" },
     { name = "numpy", marker = "extra == 'parity'" },
     { name = "pydantic", marker = "extra == 'parity'", specifier = ">=2.0" },

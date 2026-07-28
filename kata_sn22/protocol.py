@@ -41,8 +41,7 @@ MAX_RESULTS_PER_TASK = 20
 #: How many results a task ASKS for by default. Distinct in meaning from the ceiling above, and
 #: since SN22-5 it is load-bearing in both directions: returning more is an ``EXCESS_OUTPUT``
 #: violation, and returning fewer is the upstream count penalty. Five rather than twenty because a
-#: request has to be satisfiable — asking for more results than the sealed corpus can supply would
-#: make the count penalty a constant, which is a penalty that ranks nobody.
+#: request has to be realistically satisfiable without making verification cost dominate the round.
 DEFAULT_RESULTS_PER_TASK = 5
 MAX_CITATIONS_PER_TASK = 40
 MAX_TEXT_CHARS = 8_000
@@ -52,9 +51,6 @@ SEARCH_TYPES = ("ai_search", "x_search")
 AI_MODES = ("fast", "balanced", "deep")
 RESULT_TYPES = ("summary", "links", "both")
 
-#: A document identifier must be STABLE — the same document is the same id in the sealed
-#: snapshot and in a citation — and inert, because it is used as a dict key and printed into
-#: reports.
 #: A result's live URL. Only http(s): a scheme the validator cannot fetch is a source it cannot
 #: verify, and an unverifiable source must not reach the judge.
 HTTP_URL_RE = re.compile(r"^https?://[^\s<>\"]{1,2040}$")

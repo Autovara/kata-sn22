@@ -45,6 +45,8 @@ AGENT_MEMORY_ENV = "KATA_SN22_TEE_AGENT_MEMORY"
 AGENT_CPUS_ENV = "KATA_SN22_TEE_AGENT_CPUS"
 DEFAULT_AGENT_MEMORY = "2g"
 DEFAULT_AGENT_CPUS = "2"
+MAX_AGENT_OUTPUT_BYTES = 512 * 1024
+MAX_AGENT_STDERR_BYTES = 16 * 1024
 
 
 class Sn22TeeProfile:
@@ -80,6 +82,9 @@ class Sn22TeeProfile:
 
         if not bundle_root:
             raise RuntimeError("no extracted submission bundle to run")
+        if credential is None:
+            raise RuntimeError(
+                "SN22 TEE execution requires a miner-owned sealed inference credential")
         task = self._task_from(project_key)
 
         ensure_inference_network_once()
@@ -93,7 +98,8 @@ class Sn22TeeProfile:
         api_key = credential.api_key if credential is not None else ""
 
         with tempfile.TemporaryDirectory() as workdir:
-            answer, stderr, timed_out = self._run_agent(
+            os.chmod(workdir, 0o777)
+            answer, stderr, timed_out, returncode, truncated = self._run_agent(
                 bundle_root=bundle_root, workdir=workdir, task=task,
                 gateway=gateway, api_key=api_key)
 
@@ -102,6 +108,8 @@ class Sn22TeeProfile:
             "task_id": task.get("task_id"),
             "answer": answer,
             "timed_out": timed_out,
+            "returncode": returncode,
+            "truncated": truncated,
             # Truncated and kept for the operator only. It is the miner's own process output and is
             # never scored -- a candidate that could influence scoring by what it printed to stderr
             # would be scoring itself.
@@ -131,7 +139,7 @@ class Sn22TeeProfile:
         return task
 
     def _run_agent(self, *, bundle_root: str, workdir: str, task: dict,
-                   gateway: str, api_key: str) -> tuple[str, str, bool]:
+                   gateway: str, api_key: str) -> tuple[str, str, bool, int, bool]:
         """Start the untrusted agent container and read its one JSON answer off stdout.
 
         Everything restrictive here is deliberate and mirrors SN60's profile: no network but the
@@ -146,8 +154,11 @@ class Sn22TeeProfile:
             "--read-only",
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
+            "--user", "65532:65532",
             "--memory", os.environ.get(AGENT_MEMORY_ENV, "").strip() or DEFAULT_AGENT_MEMORY,
             "--cpus", os.environ.get(AGENT_CPUS_ENV, "").strip() or DEFAULT_AGENT_CPUS,
+            "--pids-limit", "64",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m,uid=65532,gid=65532,mode=700",
             "--mount", f"type=bind,source={bundle_root},target=/bundle,readonly",
             "--mount", f"type=bind,source={workdir},target=/work",
             "--workdir", "/work",
@@ -161,22 +172,40 @@ class Sn22TeeProfile:
             image,
             "python", "/bundle/agent.py",
         ]
-        try:
-            completed = subprocess.run(
-                argv, input=json.dumps(task).encode("utf-8"), capture_output=True,
-                timeout=timeout, check=False)
-        except subprocess.TimeoutExpired:
-            return "", "agent exceeded its execution timeout", True
-        return (completed.stdout.decode("utf-8", errors="replace"),
-                completed.stderr.decode("utf-8", errors="replace"),
-                False)
+        stdout_path = os.path.join(workdir, "stdout")
+        stderr_path = os.path.join(workdir, "stderr")
+        with open(stdout_path, "wb") as stdout, open(stderr_path, "wb") as stderr:
+            try:
+                completed = subprocess.run(
+                    argv,
+                    input=json.dumps(task).encode("utf-8"),
+                    stdout=stdout,
+                    stderr=stderr,
+                    timeout=timeout,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return "", "agent exceeded its execution timeout", True, 124, False
+        with open(stdout_path, "rb") as stdout:
+            raw_answer = stdout.read(MAX_AGENT_OUTPUT_BYTES + 1)
+        with open(stderr_path, "rb") as stderr:
+            raw_stderr = stderr.read(MAX_AGENT_STDERR_BYTES + 1)
+        truncated = len(raw_answer) > MAX_AGENT_OUTPUT_BYTES
+        answer = "" if truncated else raw_answer.decode("utf-8", errors="replace")
+        return (
+            answer,
+            raw_stderr[:MAX_AGENT_STDERR_BYTES].decode("utf-8", errors="replace"),
+            False,
+            completed.returncode,
+            truncated,
+        )
 
     @staticmethod
     def _fixture_result(*, job_id: str, bundle_sha256: str) -> TeeJobResult:
         """The no-docker plumbing stub: proves the room wiring without running an agent."""
         return TeeJobResult(
             report={"schema_version": 1, "task_id": "fixture", "answer": "{}", "timed_out": False,
-                    "stderr_tail": ""},
+                    "returncode": 0, "truncated": False, "stderr_tail": ""},
             provenance={"profile": "sn22", "job_id": job_id, "bundle_sha256": bundle_sha256,
                         "fixture": True, "inference_funded_by": "miner"})
 

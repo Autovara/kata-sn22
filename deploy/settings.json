@@ -7,6 +7,10 @@
     "the registry's; naming one here is refused outright, not ignored.",
     "subnet_id and lane_id below are an ASSERTION, not an input: they are checked against the",
     "registry lane so pointing the generator at the wrong checkout fails loudly.",
+    "The daily caps cover ten worst-case paired challenges. Candidate inference is miner-funded;",
+    "the validator reserves only room runs and independently metered verification resources.",
+    "A spend_usd cap is intentionally absent because these providers expose no hard per-request",
+    "price ceiling here; pretending to enforce one would be weaker than enforcing billed units.",
     "KATA_PROMOTE_MARGINS are the indifference bands a challenger must clear on each ranked signal.",
     "They are SN22's because only SN22 knows what a meaningful difference is in its own units;",
     "sn22_latency_seconds is a SUM over the round's tasks, so its margin scales with task_count and",
@@ -25,10 +29,10 @@
   },
 
   "lane_env": {
-    "KATA_SUBNET_BUDGET_INFERENCE_CALLS": "128",
-    "KATA_SUBNET_BUDGET_SPEND_USD": "5.0",
-    "KATA_SUBNET_BUDGET_DATA_API_CALLS": "256",
-    "KATA_SUBNET_BUDGET_SCRAPE_UNITS": "64",
+    "KATA_SUBNET_BUDGET_TEE_RUNS": "480",
+    "KATA_SUBNET_BUDGET_INFERENCE_CALLS": "640",
+    "KATA_SUBNET_BUDGET_DATA_API_CALLS": "800",
+    "KATA_SUBNET_BUDGET_SCRAPE_UNITS": "800",
     "KATA_SUBNET_MAX_RUNTIME": "3600",
     "KATA_PROMOTE_MARGINS": "{\"sn22_weighted_quality\":0.01,\"sn22_citation_precision\":0.01,\"sn22_coverage\":0.01,\"sn22_cost_units\":1.0,\"sn22_latency_seconds\":2.0}"
   },

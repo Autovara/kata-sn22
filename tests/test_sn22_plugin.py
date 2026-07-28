@@ -330,24 +330,49 @@ def test_conformance_scorecards_order_correctly(plugin):
 # ---- cost ---------------------------------------------------------------------------------------
 def test_the_capacity_estimate_bounds_both_contestants(plugin):
     bound = plugin.capacity_estimate(
-        config={"task_count": 5, "max_provider_calls": 3, "max_tokens": 1000})
-    assert bound["inference_calls"] == 5 * 3 * 2
-    assert bound["tokens"] == 5 * 1000 * 2
+        config={"task_count": 5, "max_results": 4})
+    assert bound == {
+        "data_api_calls": 5 * 4 * 2,
+        "inference_calls": 5 * (3 + 1) * 2,
+        "scrape_units": 5 * 4 * 2,
+        "tee_runs": 5 * 2 * 3,
+    }
 
 
 def test_the_estimate_is_a_true_upper_bound(plugin, tmp_path):
-    """The relay's own quota must make it impossible to exceed what was reserved."""
-    config = {"task_count": 2, "max_provider_calls": 2, "max_wall_seconds": 30}
+    """Every independently metered verifier resource is bounded for both contestants."""
+    config = {"task_count": 2, "max_results": 5, "max_wall_seconds": 30}
     problems = plugin.sample_problems(seed=SEED, config=config)
     bound = plugin.capacity_estimate(config=config)
     raw = _run(plugin, problems, _agent(tmp_path, "greedy", HONEST_AGENT), tmp_path, "challenger")
-    assert raw.usage.totals("challenger")["provider_calls"] <= bound["inference_calls"]
+    assert len(raw.attempts) * 5 * 2 <= bound["data_api_calls"]
+    assert len(raw.attempts) * 5 * 2 <= bound["scrape_units"]
 
 
 def test_the_estimate_uses_the_plugins_own_config_resolution(plugin):
     """Defaults here must match sample_problems, or the reservation diverges from the execution."""
     assert plugin.capacity_estimate(config={}) == plugin.capacity_estimate(
-        config={"task_count": 4, "max_provider_calls": 8, "max_tokens": 20_000})
+        config={"task_count": 4, "max_results": 5})
+
+
+def test_recorded_mode_cannot_zero_out_a_tee_reservation(
+    plugin, monkeypatch
+) -> None:
+    monkeypatch.setenv("KATA_SN22_VERIFICATION_MODE", "recorded")
+    monkeypatch.setenv("KATA_SN22_EXECUTION_BACKEND", "tee")
+
+    estimate = plugin.capacity_estimate(config={"task_count": 5})
+
+    assert estimate == {
+        "data_api_calls": 0.0,
+        "inference_calls": 0.0,
+        "scrape_units": 0.0,
+        "tee_runs": 5 * 2 * 3,
+    }
+    assert any(
+        "TEE backend requires KATA_SN22_VERIFICATION_MODE=live" in issue["message"]
+        for issue in plugin.preflight()
+    )
 
 
 # ---- screening ----------------------------------------------------------------------------------
@@ -406,6 +431,10 @@ def test_the_result_serializes_the_ordered_rank_signals(plugin):
     assert document["evaluator_id"] == "sn22_desearch"
     assert document["plugin_revision"] == PLUGIN_REVISION
     assert document["protocol_version"] == PROTOCOL_VERSION
+    assert document["canary_requirements"] == {
+        "provider_calls_per_side_min": 1,
+        "positive_signals": ["sn22_weighted_quality", "sn22_coverage"],
+    }
     for side in ("king", "challenger"):
         signals = document[side]["signals"]
         assert [s["name"] for s in signals] == [name for name, _ in RANK_SIGNALS]

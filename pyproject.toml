@@ -5,6 +5,7 @@ description = "SN22 (Desearch) subnet plugin for the Kata competition platform (
 requires-python = ">=3.12"
 dependencies = [
   "kata",
+  "dcap-qvl==0.5.3",
 ]
 
 [project.optional-dependencies]

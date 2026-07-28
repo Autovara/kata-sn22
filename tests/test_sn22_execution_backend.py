@@ -129,16 +129,29 @@ def test_the_development_backend_runs_without_a_room(plugin, monkeypatch, tmp_pa
 
 
 def test_a_configured_room_satisfies_the_tee_declaration(plugin, monkeypatch, tmp_path):
-    """With a room configured the guard passes; whether the room ANSWERS is the room's business."""
+    """A configured TEE selects the remote client and never falls through to local execution."""
+    from kata_sn22 import plugin as plugin_module
+
     monkeypatch.setenv(execution_policy.EXECUTION_BACKEND_ENV, "tee")
     monkeypatch.setenv(ROOM_ENDPOINT_ENV, "https://room.example:8443")
     problems = plugin.sample_problems(seed="tee-room", config={"task_count": 1})
-    # It gets PAST the declaration guard -- it no longer raises the "no sealed room" refusal.
-    try:
-        plugin.run_candidate(agent_path=str(_submission(tmp_path)), problems=problems,
-                             context=_context(tmp_path))
-    except Sn22AgentError as exc:
-        assert "no sealed room is configured" not in str(exc)
+    remote_result = object()
+    monkeypatch.setattr(
+        plugin,
+        "_run_candidate_in_tee",
+        lambda **_kwargs: remote_result,
+    )
+    monkeypatch.setattr(
+        plugin_module,
+        "_execute",
+        lambda *_args, **_kwargs: pytest.fail("TEE execution fell through to the local runner"),
+    )
+
+    assert plugin.run_candidate(
+        agent_path=str(_submission(tmp_path)),
+        problems=problems,
+        context=_context(tmp_path),
+    ) is remote_result
 
 
 # ---- the room profile is the subnet's only piece of the room-----------------------------------
