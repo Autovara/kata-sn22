@@ -1,0 +1,13 @@
+{
+ "pool_kind": "upstream-snapshot",
+ "row_count": 425743,
+ "rows_per_lane": {
+  "news": 165263,
+  "nq": 5000,
+  "squad": 5000,
+  "x": 250480
+ },
+ "sha256": "7fb790645178442572c48cb48de1fec7b91787f03f3715c7aa24ae5530cbaea4",
+ "source": "desearch/dataset + sentence-transformers/squad, sentence-transformers/natural-questions",
+ "upstream_commit": "bea9712f58a5fc01c57ec441ce279499529d8bf6"
+}
