@@ -624,3 +624,25 @@ def test_a_round_is_still_exactly_reproducible_from_its_seed():
         return getattr(task, "prompt", None) or getattr(task, "query", "")
 
     assert [_text(task) for task in first.tasks] == [_text(task) for task in second.tasks]
+
+
+def test_the_runner_image_does_not_ship_the_question_pool():
+    """The room never loads it -- each task's descriptor arrives inside the pool job, already drawn
+    on the validator host.
+
+    A production snapshot is ~90 MB and every byte of an attested image is covered by the
+    measurement. Shipping questions the room cannot read would inflate what an operator has to
+    reason about and slow every room deploy, for nothing.
+    """
+    from pathlib import Path
+
+    build = (Path(em.__file__).parents[1] / "deploy" / "sn22-runner" / "build.sh")
+    body = build.read_text(encoding="utf-8")
+    assert "datasets" in body and "-name '*.jsonl' -delete" in body, (
+        "the runner build no longer strips the question pool from the image context")
+
+    profile = (Path(em.__file__).parents[1] / "deploy" / "sn22-runner" / "tee_profile.py")
+    source = profile.read_text(encoding="utf-8")
+    assert "load_pool" not in source, (
+        "the room now loads the question pool; it would have to ship it, and the pool is the "
+        "validator's to draw from")

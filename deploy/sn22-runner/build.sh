@@ -50,6 +50,16 @@ rm -rf "${HERE}/kata_sn22/upstream"
 find "${HERE}/kata_sn22" "${HERE}/kata_sn22_upstream" -name '__pycache__' -type d -prune \
   -exec rm -rf {} +
 
+# The question POOL is not staged. The room never loads it: it receives each task's descriptor
+# inside the pool job, already drawn on the validator host. A production snapshot is ~90 MB, and
+# every byte of an attested image is covered by the measurement -- so shipping questions the room
+# cannot read would inflate the thing an operator has to reason about, slow every room deploy, and
+# add nothing.
+#
+# `x_seeds.json` DOES stay: it is small, and `epoch_manifest` imports it at module load.
+find "${HERE}/kata_sn22/datasets" -name '*.jsonl' -delete
+find "${HERE}/kata_sn22/datasets" -name '*.meta.json' -delete
+
 build_args=(
   --platform "$PLATFORM"
   --build-arg "BASE=$BASE"
