@@ -19,6 +19,13 @@ parity = ["pytest>=8.0", "ruff>=0.6", "pydantic>=2.0", "pytz", "numpy"]
 # network access at duel time is the thing the packaged rows exist to avoid. Keeping them optional
 # is what stops the lane runtime -- which runs in a room with no egress -- acquiring them.
 snapshot = ["huggingface_hub>=0.24", "datasets>=2.20"]
+# The TRUSTED RUNNER's production scoring path. These four carry upstream's own scoring semantics
+# and cannot be adapted away: pydantic validates the protocol models, numpy IS the arithmetic, pytz
+# decides what "within date range" means, and tiktoken counts the tokens the streaming penalty
+# charges for. Everything else upstream imports -- bittensor, wandb, aiohttp, the provider SDKs --
+# is infrastructure and is replaced by kata_sn22.upstream_runtime. The AGENT image carries none of
+# this; see docs/DECISION-bittensor-not-in-the-room.md.
+upstream = ["pydantic>=2.0", "numpy", "pytz", "tiktoken"]
 
 # Discovered by the Kata platform via the kata.subnets entry-point group.
 [project.entry-points."kata.subnets"]
