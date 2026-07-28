@@ -275,14 +275,24 @@ def test_the_client_carries_no_provider_credential(tmp_path):
 
 # ---- end to end--------------------------------------------------------------------------------
 
-#: Miners submit to the ONE competition repo, under their subnet's tree. There is no separate
-#: per-subnet submissions repository any more.
-REFERENCE_AGENT = (Path(__file__).resolve().parents[2] / "kata" / "submissions"
-                   / "sn22__desearch" / "miner" / "example-20260727-01")
+#: The agent these two tests drive is THIS REPOSITORY'S version-1 calibration agent, not the
+#: reference submission. Since Phase D the shipped submission is a version-2 ``kata_sn22_sdk``
+#: agent, because that is what the sealed room runs -- and it cannot execute on the sandbox's
+#: version-1 path at all, which reads one task on stdin and scores `summary`/`results`/`citations`.
+#:
+#: Pointing these tests at the shipped submission would therefore fail for a reason that has
+#: nothing to do with the relay: the two paths have not converged, and Phase E/F is where they do.
+#: What is still worth proving here is that the SANDBOX SEAM works end to end -- socket, capability,
+#: billing, scoring -- with a real agent rather than a stub. That is what this one is for.
+#:
+#: The version-2 equivalent, and the stronger test, is
+#: ``tests/test_sn22_sdk.py::test_the_reference_agent_completes_every_pool``: the shipped agent,
+#: through the real harness, across all four pools, parsed by the trusted side's own parser.
+REFERENCE_AGENT = Path(__file__).resolve().parent / "agents" / "v1-calibration"
 
 
 @pytest.mark.skipif(not REFERENCE_AGENT.is_dir(),
-                    reason="the kata competition repository is not checked out beside this one")
+                    reason="the version-1 calibration agent is missing")
 def test_the_reference_submission_scores_through_the_real_relay(tmp_path):
     """The shipped reference agent, run by the plugin, against the real gateway and socket.
 

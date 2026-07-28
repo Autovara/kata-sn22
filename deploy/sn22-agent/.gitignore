@@ -1,1 +1,6 @@
+# Staged into the build context by build.sh and removed on exit; never committed.
 sn22_relay.py
+kata_sn22_sdk/
+
+# SBOM, vulnerability report and build summary. Regenerated per build.
+artifacts/

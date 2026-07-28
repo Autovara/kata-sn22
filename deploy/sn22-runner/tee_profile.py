@@ -220,7 +220,11 @@ class Sn22TeeProfile:
             "--env", "SN22_PROTOCOL_VERSION=2",
             "--env", f"SN22_TASK_ID={task.get('task_id')}",
             image,
-            "python", "/bundle/agent.py",
+            # The BUNDLE PATH, appended to the image's own entry point -- the harness. The
+            # submission is imported by reviewed code rather than executed as a program, so every
+            # contestant's answer is framed by the same function. Running `python /bundle/agent.py`
+            # here instead would put the framing back in each miner's hands.
+            "/bundle/agent.py",
         ]
         stdout_path = os.path.join(workdir, "stdout")
         stderr_path = os.path.join(workdir, "stderr")
