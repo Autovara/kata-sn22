@@ -1,0 +1,96 @@
+{
+  "answer": {
+    "chunks": [
+      {
+        "role": "intro",
+        "text": "Searching..."
+      }
+    ],
+    "completion": "",
+    "miner_tweets": [],
+    "protocol_version": 2,
+    "search_results": [
+      {
+        "link": "https://wiki.test/got0",
+        "snippet": "Patrick Malahide plays Balon Greyjoy.",
+        "title": "Cast list 0"
+      },
+      {
+        "link": "https://wiki.test/got1",
+        "snippet": "Patrick Malahide plays Balon Greyjoy.",
+        "title": "Cast list 1"
+      },
+      {
+        "link": "https://wiki.test/got2",
+        "snippet": "Patrick Malahide plays Balon Greyjoy.",
+        "title": "Cast list 2"
+      },
+      {
+        "link": "https://wiki.test/got3",
+        "snippet": "Patrick Malahide plays Balon Greyjoy.",
+        "title": "Cast list 3"
+      },
+      {
+        "link": "https://wiki.test/got4",
+        "snippet": "Patrick Malahide plays Balon Greyjoy.",
+        "title": "Cast list 4"
+      },
+      {
+        "link": "https://wiki.test/got5",
+        "snippet": "Patrick Malahide plays Balon Greyjoy.",
+        "title": "Cast list 5"
+      },
+      {
+        "link": "https://wiki.test/got6",
+        "snippet": "Patrick Malahide plays Balon Greyjoy.",
+        "title": "Cast list 6"
+      },
+      {
+        "link": "https://wiki.test/got7",
+        "snippet": "Patrick Malahide plays Balon Greyjoy.",
+        "title": "Cast list 7"
+      },
+      {
+        "link": "https://wiki.test/got8",
+        "snippet": "Patrick Malahide plays Balon Greyjoy.",
+        "title": "Cast list 8"
+      },
+      {
+        "link": "https://wiki.test/got9",
+        "snippet": "Patrick Malahide plays Balon Greyjoy.",
+        "title": "Cast list 9"
+      }
+    ],
+    "task_id": "ai-deep-0001",
+    "text_chunks": {},
+    "texts": {}
+  },
+  "deep": false,
+  "name": "ai_only_links",
+  "protocol_version": 2,
+  "task": {
+    "count": 10,
+    "date_filter_type": null,
+    "end_date": null,
+    "exclude_domains": [],
+    "include_domains": [],
+    "limits": {
+      "max_execution_time": 30,
+      "max_output_bytes": 2000000,
+      "max_provider_calls": 32,
+      "max_tokens": 60000
+    },
+    "mode": "deep",
+    "prompt": "Who plays Balon Greyjoy in Game of Thrones?",
+    "protocol_version": 2,
+    "result_type": "ONLY_LINKS",
+    "search_type": "ai_search",
+    "start_date": null,
+    "system_message": "",
+    "task_id": "ai-deep-0001",
+    "tools": [
+      "Web Search",
+      "Twitter Search"
+    ]
+  }
+}

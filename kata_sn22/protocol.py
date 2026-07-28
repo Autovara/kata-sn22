@@ -1,4 +1,16 @@
-"""The frozen SN22 submission contract (plan §5.1, SN22-2).
+"""Protocol version 1 — **DEVELOPMENT AND CALIBRATION ONLY. NOT THE PRODUCTION PATH.**
+
+Superseded by :mod:`kata_sn22.protocol_v2`. This version defined Kata's *own* task and answer
+shapes, which was the right size for a sealed offline challenge and is the wrong size for
+production: upstream's scorer reads fields v1 never carried, so a v1 answer cannot be scored by
+upstream code at all. Two concrete examples — v1 returns one JSON document, so upstream's streaming
+penalty has no input; and v1 defaults to 5 results where upstream's own model declares
+``Field(10, ge=10)``, making 5 invalid input rather than a different default.
+
+It is kept, and still tested, because calibration and the fixture ladder run on it and neither needs
+a network or a credential. Production rejects ``protocol_version: 1`` rather than translating it.
+
+The frozen SN22 submission contract (plan §5.1, SN22-2).
 
 A miner submits an agent; the lane runs it and scores what comes back. Everything crossing that
 boundary is defined here, versioned, and validated before it is allowed to influence a score.

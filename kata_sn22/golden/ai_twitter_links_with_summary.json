@@ -1,0 +1,156 @@
+{
+  "answer": {
+    "chunks": [
+      {
+        "role": "twitter_summary",
+        "text": "3 tweets."
+      },
+      {
+        "role": "summary",
+        "text": "Festivals drove a 12% rise."
+      }
+    ],
+    "completion": "**Irish tourism**\n\nFestivals drove a 12% rise. [1](https://news.test/galway)",
+    "miner_tweets": [
+      {
+        "bookmark_count": 0,
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "id": "1900000000000000000",
+        "is_quote_tweet": false,
+        "is_retweet": false,
+        "like_count": 9,
+        "quote_count": 0,
+        "reply_count": 1,
+        "retweet_count": 2,
+        "text": "On-subject tweet 0 about emissions.",
+        "url": "https://x.com/a/status/1900000000000000000",
+        "user": {
+          "id": "u-1",
+          "username": "alice"
+        }
+      },
+      {
+        "bookmark_count": 0,
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "id": "1900000000000000001",
+        "is_quote_tweet": false,
+        "is_retweet": false,
+        "like_count": 9,
+        "quote_count": 0,
+        "reply_count": 1,
+        "retweet_count": 2,
+        "text": "On-subject tweet 1 about emissions.",
+        "url": "https://x.com/a/status/1900000000000000001",
+        "user": {
+          "id": "u-1",
+          "username": "alice"
+        }
+      },
+      {
+        "bookmark_count": 0,
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "id": "1900000000000000002",
+        "is_quote_tweet": false,
+        "is_retweet": false,
+        "like_count": 9,
+        "quote_count": 0,
+        "reply_count": 1,
+        "retweet_count": 2,
+        "text": "On-subject tweet 2 about emissions.",
+        "url": "https://x.com/a/status/1900000000000000002",
+        "user": {
+          "id": "u-1",
+          "username": "alice"
+        }
+      }
+    ],
+    "protocol_version": 2,
+    "search_results": [
+      {
+        "link": "https://news.test/galway0",
+        "snippet": "Galway Arts Festival drew 250,000 visitors in 2026, up 18%.",
+        "title": "Source 0"
+      },
+      {
+        "link": "https://news.test/galway1",
+        "snippet": "Galway Arts Festival drew 250,000 visitors in 2026, up 18%.",
+        "title": "Source 1"
+      },
+      {
+        "link": "https://news.test/galway2",
+        "snippet": "Galway Arts Festival drew 250,000 visitors in 2026, up 18%.",
+        "title": "Source 2"
+      },
+      {
+        "link": "https://news.test/galway3",
+        "snippet": "Galway Arts Festival drew 250,000 visitors in 2026, up 18%.",
+        "title": "Source 3"
+      },
+      {
+        "link": "https://news.test/galway4",
+        "snippet": "Galway Arts Festival drew 250,000 visitors in 2026, up 18%.",
+        "title": "Source 4"
+      },
+      {
+        "link": "https://news.test/galway5",
+        "snippet": "Galway Arts Festival drew 250,000 visitors in 2026, up 18%.",
+        "title": "Source 5"
+      },
+      {
+        "link": "https://news.test/galway6",
+        "snippet": "Galway Arts Festival drew 250,000 visitors in 2026, up 18%.",
+        "title": "Source 6"
+      },
+      {
+        "link": "https://news.test/galway7",
+        "snippet": "Galway Arts Festival drew 250,000 visitors in 2026, up 18%.",
+        "title": "Source 7"
+      },
+      {
+        "link": "https://news.test/galway8",
+        "snippet": "Galway Arts Festival drew 250,000 visitors in 2026, up 18%.",
+        "title": "Source 8"
+      },
+      {
+        "link": "https://news.test/galway9",
+        "snippet": "Galway Arts Festival drew 250,000 visitors in 2026, up 18%.",
+        "title": "Source 9"
+      }
+    ],
+    "task_id": "ai-balanced-0001",
+    "text_chunks": {},
+    "texts": {
+      "summary": "Festivals drove a 12% rise. [1](https://news.test/galway)"
+    }
+  },
+  "deep": true,
+  "name": "ai_twitter_links_with_summary",
+  "protocol_version": 2,
+  "task": {
+    "count": 10,
+    "date_filter_type": null,
+    "end_date": "2026-07-01T00:00:00Z",
+    "exclude_domains": [],
+    "include_domains": [
+      "failteireland.ie"
+    ],
+    "limits": {
+      "max_execution_time": 15,
+      "max_output_bytes": 2000000,
+      "max_provider_calls": 32,
+      "max_tokens": 60000
+    },
+    "mode": "balanced",
+    "prompt": "How are cultural festivals shaping Irish tourism?",
+    "protocol_version": 2,
+    "result_type": "LINKS_WITH_FINAL_SUMMARY",
+    "search_type": "ai_search",
+    "start_date": "2026-01-01T00:00:00Z",
+    "system_message": "",
+    "task_id": "ai-balanced-0001",
+    "tools": [
+      "Web Search",
+      "Twitter Search"
+    ]
+  }
+}

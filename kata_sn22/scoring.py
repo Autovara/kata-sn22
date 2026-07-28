@@ -20,11 +20,24 @@ combination path is :mod:`kata_sn22.upstream_adapter` — a port of the pinned u
 :mod:`kata_sn22.parity` proves, by execution, computes what the real upstream computes. A second
 copy of "0.90 / 0.10" living in this file is a copy that can drift silently, so there is not one.
 
-What that buys, concretely: ``sn22_weighted_quality`` is now the upstream reward — the AI content /
-summary split, the ONLY_LINKS reweighting, the component floors, the applicable penalties, and the
-pool shares — rather than a Kata-shaped approximation of it. It still does NOT claim to reproduce
-on-chain emissions, which are pool-relative and depend on miner population; Kata compares exactly
-two agents on one challenge.
+What that buys, concretely: ``sn22_weighted_quality`` is the upstream reward for the components it
+covers — the AI content / summary split, the ONLY_LINKS reweighting, the component floors, the
+applicable penalties, and the pool shares.
+
+**It is NOT upstream-complete, and must not be described as such.** Three things are missing, and
+each changes a score:
+
+* the TIMING components — ``timeout_penalty``, ``min_realistic_time_penalty`` and the performance
+  multiplier — are excluded here and published as a separate ranked signal instead;
+* ``streaming_penalty`` has no input, because protocol v1 returns one JSON document rather than a
+  stream;
+* pool scores are computed PER CONTESTANT. Upstream's ``combine_pool_scores`` normalizes a pool
+  across the whole population, so two agents scored separately and then compared are not being
+  compared the way upstream would compare them.
+
+The production path replaces this: it executes the pinned upstream validators inside the sealed room
+and runs ``combine_pool_scores`` once over both contestants as two virtual UIDs. This module remains
+the calibration and fixture scorer, where an offline, dependency-free score is what is wanted.
 """
 from __future__ import annotations
 

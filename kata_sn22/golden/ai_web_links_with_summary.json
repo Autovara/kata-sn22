@@ -1,0 +1,105 @@
+{
+  "answer": {
+    "chunks": [
+      {
+        "role": "intro",
+        "text": "Searching..."
+      },
+      {
+        "role": "search_summary",
+        "text": "Found 3 sources."
+      },
+      {
+        "role": "summary",
+        "text": "Russian strikes killed 28 people in July."
+      }
+    ],
+    "completion": "**Odesa strikes**\n\nRussian strikes killed 28 people in July. [1](https://news.test/odesa)",
+    "miner_tweets": [],
+    "protocol_version": 2,
+    "search_results": [
+      {
+        "link": "https://news.test/odesa0",
+        "snippet": "Russian strikes have killed 28 people in the southern Odesa region in July.",
+        "title": "Source 0"
+      },
+      {
+        "link": "https://news.test/odesa1",
+        "snippet": "Russian strikes have killed 28 people in the southern Odesa region in July.",
+        "title": "Source 1"
+      },
+      {
+        "link": "https://news.test/odesa2",
+        "snippet": "Russian strikes have killed 28 people in the southern Odesa region in July.",
+        "title": "Source 2"
+      },
+      {
+        "link": "https://news.test/odesa3",
+        "snippet": "Russian strikes have killed 28 people in the southern Odesa region in July.",
+        "title": "Source 3"
+      },
+      {
+        "link": "https://news.test/odesa4",
+        "snippet": "Russian strikes have killed 28 people in the southern Odesa region in July.",
+        "title": "Source 4"
+      },
+      {
+        "link": "https://news.test/odesa5",
+        "snippet": "Russian strikes have killed 28 people in the southern Odesa region in July.",
+        "title": "Source 5"
+      },
+      {
+        "link": "https://news.test/odesa6",
+        "snippet": "Russian strikes have killed 28 people in the southern Odesa region in July.",
+        "title": "Source 6"
+      },
+      {
+        "link": "https://news.test/odesa7",
+        "snippet": "Russian strikes have killed 28 people in the southern Odesa region in July.",
+        "title": "Source 7"
+      },
+      {
+        "link": "https://news.test/odesa8",
+        "snippet": "Russian strikes have killed 28 people in the southern Odesa region in July.",
+        "title": "Source 8"
+      },
+      {
+        "link": "https://news.test/odesa9",
+        "snippet": "Russian strikes have killed 28 people in the southern Odesa region in July.",
+        "title": "Source 9"
+      }
+    ],
+    "task_id": "ai-fast-0001",
+    "text_chunks": {},
+    "texts": {
+      "summary": "Russian strikes killed 28 people in July. [1](https://news.test/odesa)"
+    }
+  },
+  "deep": false,
+  "name": "ai_web_links_with_summary",
+  "protocol_version": 2,
+  "task": {
+    "count": 10,
+    "date_filter_type": null,
+    "end_date": null,
+    "exclude_domains": [],
+    "include_domains": [],
+    "limits": {
+      "max_execution_time": 5,
+      "max_output_bytes": 2000000,
+      "max_provider_calls": 32,
+      "max_tokens": 60000
+    },
+    "mode": "fast",
+    "prompt": "How many people died in the Odesa strikes in July?",
+    "protocol_version": 2,
+    "result_type": "LINKS_WITH_FINAL_SUMMARY",
+    "search_type": "ai_search",
+    "start_date": null,
+    "system_message": "",
+    "task_id": "ai-fast-0001",
+    "tools": [
+      "Web Search"
+    ]
+  }
+}

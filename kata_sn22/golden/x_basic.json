@@ -1,0 +1,200 @@
+{
+  "answer": {
+    "protocol_version": 2,
+    "results": [
+      {
+        "bookmark_count": 0,
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "id": "1900000000000000000",
+        "is_quote_tweet": false,
+        "is_retweet": false,
+        "like_count": 9,
+        "quote_count": 0,
+        "reply_count": 1,
+        "retweet_count": 2,
+        "text": "On-subject tweet 0 about emissions.",
+        "url": "https://x.com/a/status/1900000000000000000",
+        "user": {
+          "id": "u-1",
+          "username": "alice"
+        }
+      },
+      {
+        "bookmark_count": 0,
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "id": "1900000000000000001",
+        "is_quote_tweet": false,
+        "is_retweet": false,
+        "like_count": 9,
+        "quote_count": 0,
+        "reply_count": 1,
+        "retweet_count": 2,
+        "text": "On-subject tweet 1 about emissions.",
+        "url": "https://x.com/a/status/1900000000000000001",
+        "user": {
+          "id": "u-1",
+          "username": "alice"
+        }
+      },
+      {
+        "bookmark_count": 0,
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "id": "1900000000000000002",
+        "is_quote_tweet": false,
+        "is_retweet": false,
+        "like_count": 9,
+        "quote_count": 0,
+        "reply_count": 1,
+        "retweet_count": 2,
+        "text": "On-subject tweet 2 about emissions.",
+        "url": "https://x.com/a/status/1900000000000000002",
+        "user": {
+          "id": "u-1",
+          "username": "alice"
+        }
+      },
+      {
+        "bookmark_count": 0,
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "id": "1900000000000000003",
+        "is_quote_tweet": false,
+        "is_retweet": false,
+        "like_count": 9,
+        "quote_count": 0,
+        "reply_count": 1,
+        "retweet_count": 2,
+        "text": "On-subject tweet 3 about emissions.",
+        "url": "https://x.com/a/status/1900000000000000003",
+        "user": {
+          "id": "u-1",
+          "username": "alice"
+        }
+      },
+      {
+        "bookmark_count": 0,
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "id": "1900000000000000004",
+        "is_quote_tweet": false,
+        "is_retweet": false,
+        "like_count": 9,
+        "quote_count": 0,
+        "reply_count": 1,
+        "retweet_count": 2,
+        "text": "On-subject tweet 4 about emissions.",
+        "url": "https://x.com/a/status/1900000000000000004",
+        "user": {
+          "id": "u-1",
+          "username": "alice"
+        }
+      },
+      {
+        "bookmark_count": 0,
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "id": "1900000000000000005",
+        "is_quote_tweet": false,
+        "is_retweet": false,
+        "like_count": 9,
+        "quote_count": 0,
+        "reply_count": 1,
+        "retweet_count": 2,
+        "text": "On-subject tweet 5 about emissions.",
+        "url": "https://x.com/a/status/1900000000000000005",
+        "user": {
+          "id": "u-1",
+          "username": "alice"
+        }
+      },
+      {
+        "bookmark_count": 0,
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "id": "1900000000000000006",
+        "is_quote_tweet": false,
+        "is_retweet": false,
+        "like_count": 9,
+        "quote_count": 0,
+        "reply_count": 1,
+        "retweet_count": 2,
+        "text": "On-subject tweet 6 about emissions.",
+        "url": "https://x.com/a/status/1900000000000000006",
+        "user": {
+          "id": "u-1",
+          "username": "alice"
+        }
+      },
+      {
+        "bookmark_count": 0,
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "id": "1900000000000000007",
+        "is_quote_tweet": false,
+        "is_retweet": false,
+        "like_count": 9,
+        "quote_count": 0,
+        "reply_count": 1,
+        "retweet_count": 2,
+        "text": "On-subject tweet 7 about emissions.",
+        "url": "https://x.com/a/status/1900000000000000007",
+        "user": {
+          "id": "u-1",
+          "username": "alice"
+        }
+      },
+      {
+        "bookmark_count": 0,
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "id": "1900000000000000008",
+        "is_quote_tweet": false,
+        "is_retweet": false,
+        "like_count": 9,
+        "quote_count": 0,
+        "reply_count": 1,
+        "retweet_count": 2,
+        "text": "On-subject tweet 8 about emissions.",
+        "url": "https://x.com/a/status/1900000000000000008",
+        "user": {
+          "id": "u-1",
+          "username": "alice"
+        }
+      },
+      {
+        "bookmark_count": 0,
+        "created_at": "2026-07-01T12:00:00.000Z",
+        "id": "1900000000000000009",
+        "is_quote_tweet": false,
+        "is_retweet": false,
+        "like_count": 9,
+        "quote_count": 0,
+        "reply_count": 1,
+        "retweet_count": 2,
+        "text": "On-subject tweet 9 about emissions.",
+        "url": "https://x.com/a/status/1900000000000000009",
+        "user": {
+          "id": "u-1",
+          "username": "alice"
+        }
+      }
+    ],
+    "task_id": "x-0001"
+  },
+  "deep": false,
+  "name": "x_basic",
+  "protocol_version": 2,
+  "task": {
+    "count": 10,
+    "end_date": null,
+    "lang": "en",
+    "limits": {
+      "max_execution_time": 30,
+      "max_output_bytes": 2000000,
+      "max_provider_calls": 32,
+      "max_tokens": 60000
+    },
+    "min_likes": 5,
+    "protocol_version": 2,
+    "query": "bittensor subnet emissions",
+    "search_type": "x_search",
+    "sort": "Latest",
+    "start_date": null,
+    "task_id": "x-0001",
+    "user": null
+  }
+}
