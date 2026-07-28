@@ -42,6 +42,9 @@ DEFAULT_BUNDLE_AGENT = "/bundle/agent.py"
 #: is shared with the contestant that runs next.
 MAX_RESULTS = 1_000
 MAX_FIELD_CHARS = 100_000
+#: Quoted spans per source. Every one must be found, in order, in the validator's own copy of the
+#: page, so more is not better -- each extra is another chance to fail evidence entirely.
+MAX_HIGHLIGHTS = 32
 
 
 def load_agent(path: str) -> Agent:
@@ -88,7 +91,21 @@ def _bounded(value: object) -> object:
 
 
 def _bounded_objects(items: list) -> list:
-    return [{str(key): _bounded(item[key]) for key in list(item)[:64]} for item in items]
+    """Bound every value, including inside a list.
+
+    The list case matters: ``highlights`` is a list of quoted spans, and bounding only top-level
+    strings would leave an unbounded one reachable through it.
+    """
+    return [
+        {str(key): _bounded_value(item[key]) for key in list(item)[:64]}
+        for item in items
+    ]
+
+
+def _bounded_value(value: object) -> object:
+    if isinstance(value, list):
+        return [_bounded(entry) for entry in value[:MAX_HIGHLIGHTS]]
+    return _bounded(value)
 
 
 def frame_ai_answer(synapse: AiSearchSynapse, result: AiSearchResult, emit: Emit) -> dict:

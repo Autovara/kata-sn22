@@ -4,20 +4,31 @@ Upstream's scoring classes take a ``neuron`` and use it for two kinds of thing: 
 flags and a metagraph they index by UID, and — on paths Kata never takes — a chain client that
 queries live miners. This adapter supplies the first and **refuses** the second.
 
-**The surface is derived, not guessed.** Scanning every ``self.neuron.<attr>`` access in the reward,
-penalty and scraper packages at the pinned commit yields exactly seven names. ``tests`` re-derives
-that list against the vendored tree, so an upstream that starts reading an eighth is a test failure
-rather than an ``AttributeError`` on a duel.
+**The surface is derived, not guessed — and the first derivation was wrong.** Scanning
+``self.neuron.<attr>`` across the reward, penalty and scraper packages yields seven names, and that
+is what this module originally supplied. It missed ``neurons/validators/clients/``, which calls the
+same object ``owner`` and reads two more off it. The result was not an obvious failure: the
+``AttributeError`` was raised deep inside ``compute_rewards_and_penalties``, caught by
+``_score_one_type``'s ``except Exception``, and turned into a pool of zeros. Every contestant scored
+nothing and the logs said only "Full scoring failed".
+
+So the derivation now covers both spellings, and ``tests`` re-derives it against the vendored tree.
 
 **Two virtual UIDs, and that is the whole metagraph.** A Kata duel is a pair. UID 0 is the King and
 UID 1 the Challenger, fixed, so ``scores[uid]`` indexes into a two-element array and upstream's own
 aggregation works unmodified.
 
-**Disabled means raises, not returns None.** ``get_random_miner`` and ``metagraph.axons`` belong to
-upstream's chain-querying path — the one where a validator picks a miner off the network and sends
-it a synapse. Kata never does that: the contestants are two sealed rooms it already has answers
-from. If anything ever reached for them it would mean the round had fallen into that path, and a
-stub returning ``None`` would let it keep going and produce a number. So they raise.
+**Disabled means raises, not returns None.** ``get_random_miner`` belongs to upstream's
+chain-querying path — the one where a validator picks a miner off the network and sends it a
+synapse. Kata never does that: the contestants are two sealed rooms it already has answers from. If
+anything reached for it, the round would have fallen into that path, and a stub returning ``None``
+would let it keep going and produce a number. So it raises.
+
+``metagraph.axons`` is deliberately NOT refused, and the distinction is worth stating. Upstream's
+own logger iterates it to resolve a hotkey to a coldkey — that is bookkeeping, not querying. An
+earlier version of this adapter refused it blanketly and broke scoring entirely. What actually
+guards the querying path is ``get_random_miner``; the axons here carry two hotkeys and no network
+address, so nothing can be dispatched to them.
 
 The one exception is ``utility_api``, which is ``None`` on purpose: upstream's own log submitter
 checks for exactly that and skips, so the public validator API is disabled through upstream's
@@ -38,7 +49,9 @@ VIRTUAL_UIDS = (KING_UID, CHALLENGER_UID)
 
 #: Every attribute upstream's scoring path reads off a neuron, at the pinned commit. Re-derived by
 #: ``tests/test_sn22_production_scorer.py`` so a new upstream read is a test failure.
+#: Attributes the adapter SUPPLIES with real values.
 NEURON_SURFACE = (
+    "config.netuid",
     "config.neuron.disable_log_rewards",
     "config.neuron.scoring_model",
     "config.wandb_on",
@@ -46,6 +59,21 @@ NEURON_SURFACE = (
     "get_random_miner",
     "metagraph.axons",
     "metagraph.hotkeys",
+    "validator_identity",
+)
+
+#: Attributes upstream reads on paths Kata never takes. Present and RAISING rather than absent: an
+#: absent one is an ``AttributeError`` raised deep inside ``compute_rewards_and_penalties``, which
+#: ``_score_one_type`` catches and turns into a pool of zeros. That is exactly how
+#: ``validator_identity`` went missing for a whole phase -- every contestant scored nothing and the
+#: only trace was a log line saying "Full scoring failed".
+REFUSED_CAPABILITIES = (
+    "available_uids",
+    "check_uid",
+    "get_random_miner",
+    "initialize",
+    "set_weights",
+    "update_moving_averaged_scores",
 )
 
 
@@ -93,11 +121,22 @@ class _NeuronConfig:
 
 
 @dataclass(frozen=True)
+class _Axon:
+    """What upstream's logger reads to attribute a response. No address, nothing to dispatch to."""
+
+    hotkey: str
+    coldkey: str = "kata"
+
+
+@dataclass(frozen=True)
 class _Config:
     neuron: _NeuronConfig = field(default_factory=_NeuronConfig)
     #: There is no metrics sink in a sealed room, and upstream checks this flag before every
     #: ``wandb.log``. Disabled through upstream's own branch, not by replacing the call.
     wandb_on: bool = False
+    #: Read by the logger for its record. Zero because Kata is on no subnet: it decides one
+    #: promotion on one host and has no netuid of its own.
+    netuid: int = 0
 
 
 class _Metagraph:
@@ -105,11 +144,9 @@ class _Metagraph:
 
     def __init__(self, hotkeys: tuple) -> None:
         self.hotkeys = list(hotkeys)
-        # Indexed only by upstream's organic/querying path. See the module docstring.
-        self.axons = _RefusingList(
-            "metagraph.axons",
-            "Kata has no chain metagraph; its two contestants are sealed rooms it already holds "
-            "answers from")
+        # Real entries, because upstream's LOGGER iterates them to resolve a hotkey to a coldkey.
+        # They carry no address: what stops a query is get_random_miner refusing, not this.
+        self.axons = [_Axon(hotkey=hotkey) for hotkey in self.hotkeys]
 
     def sync(self, *_args, **_kwargs):
         raise DisabledCapability(
@@ -141,8 +178,19 @@ class KataNeuronAdapter:
         self.utility_api = None
         self.wallet = None
         self.subtensor = None
+        #: What upstream's logger stamps on each record. Names Kata, carries no chain identity, and
+        #: deliberately no hotkey that corresponds to anything anyone could pay.
+        self.validator_identity = {"validator": "kata", "netuid": 0, "hotkey": "", "uid": None}
 
     # ---- capabilities Kata does not have -------------------------------------------------------
+
+    @property
+    def available_uids(self):
+        """Read by the scheduler's own epoch loop, which Kata does not run -- it calls
+        ``_score_one_type`` directly with two contestants it already has answers from."""
+        raise DisabledCapability(
+            "available_uids is not available: Kata scores a fixed pair, not whichever miners "
+            "happened to be reachable on the network this hour")
 
     async def get_random_miner(self, *_args, **_kwargs):
         raise DisabledCapability(

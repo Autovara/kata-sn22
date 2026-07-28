@@ -193,6 +193,74 @@ class EvidenceRouter:
         }
 
 
+# ---- streaming granularity, canonicalised on the trusted side ---
+
+#: Upstream's ``MAX_TOKENS_PER_CHUNK``. A chunk above it costs 0.01 per excess token, summed across
+#: every chunk and capped at 1.0 -- so a single 300-token chunk is a FULL penalty on its own.
+STREAM_TOKENS_PER_CHUNK = 2
+
+
+def canonical_text_chunks(text_chunks: dict) -> dict:
+    """Re-split each role's text the way a token-by-token streaming miner would have emitted it.
+
+    **Why the lane does this rather than the agent.** Upstream's ``text_chunks`` is what a validator
+    *observed arriving over a wire*. Kata has no wire: an agent returns one document, so any chunk
+    boundaries in it are an unverifiable self-report. Scoring that report would measure which
+    contestant guessed the SDK's contract best, and an agent could claim perfect one-token chunks
+    whatever it actually did.
+
+    So the lane canonicalises, on the trusted side, where the real ``o200k_base`` tokenizer lives --
+    the agent image is standard-library only and cannot carry one. Both contestants are chunked
+    identically, which is the same reason the lane owns answer framing at all.
+
+    **What the penalty still measures.** Emitting no summary at all for a task that asked for one is
+    a full penalty, and canonicalisation does not touch that: an empty chunk list stays empty. What
+    it removes is a penalty for prose style.
+
+    **Nothing else changes.** ``texts`` is upstream's own join of these chunks, so re-splitting is
+    exact -- the concatenation is byte-identical and the groundedness judge reads the same summary.
+    A character whose own token count exceeds the limit still costs what it costs; no split can
+    avoid that, and a real streaming miner would pay it too.
+    """
+    import tiktoken
+
+    encoding = tiktoken.get_encoding("o200k_base")
+    canonical: dict = {}
+    for role, chunks in (text_chunks or {}).items():
+        text = "".join(chunks or [])
+        if not text:
+            # Preserved rather than dropped: an empty role is not the same as an absent one, and
+            # `not streamed_text_chunks` is the branch that carries the full penalty.
+            canonical[str(role)] = list(chunks or [])
+            continue
+        canonical[str(role)] = _split_tokens(encoding, text)
+    return canonical
+
+
+def _split_tokens(encoding, text: str) -> list:
+    """Contiguous groups of at most ``STREAM_TOKENS_PER_CHUNK`` tokens, joining back exactly.
+
+    Grouping is done on token BYTES rather than by decoding each group, because a multi-byte
+    character can straddle a token boundary; decoding a partial sequence would substitute a
+    replacement character and the rejoined text would no longer be the contestant's answer.
+    """
+    pieces: list = []
+    buffer, held = b"", 0
+    for token in encoding.encode(text):
+        buffer += encoding.decode_single_token_bytes(token)
+        held += 1
+        if held < STREAM_TOKENS_PER_CHUNK:
+            continue
+        try:
+            pieces.append(buffer.decode("utf-8"))
+        except UnicodeDecodeError:
+            continue          # a character straddles the boundary; keep accumulating
+        buffer, held = b"", 0
+    if buffer:
+        pieces.append(buffer.decode("utf-8", errors="replace"))
+    return pieces
+
+
 # ---- building upstream's own synapse objects from version-2 answers ---
 
 def build_ai_synapse(task, answer: dict, *, process_time: float):
@@ -220,8 +288,9 @@ def build_ai_synapse(task, answer: dict, *, process_time: float):
         scoring_model=protocol.ScoringModel(_scoring_model()),
     )
     synapse.completion = answer.get("completion") or ""
-    synapse.text_chunks = {str(role): list(texts)
-                           for role, texts in (answer.get("text_chunks") or {}).items()}
+    # Canonicalised, not taken as given. See canonical_text_chunks: an agent's own chunk boundaries
+    # are an unverifiable claim, and scoring them would measure prose style rather than answers.
+    synapse.text_chunks = canonical_text_chunks(answer.get("text_chunks"))
     synapse.search_results = [
         protocol.SearchResultItem(**_search_result_fields(item))
         for item in (answer.get("search_results") or [])
@@ -476,6 +545,27 @@ def _pool_result(tuple_or_none) -> PoolResult:
     return PoolResult(float(q_gate), float(q_weight), int(volume), int(deep_count))
 
 
+def pool_share_key(pool: str):
+    """Upstream's own ``POOL_SHARES`` key for a Kata pool name.
+
+    Looked up in that dict rather than constructed. ``combine_pool_scores`` indexes by
+    ``(SearchType, SearchMode)`` enum members, and enum identity is per-module: building the pair
+    from ``desearch.protocol`` produced keys that compared unequal to the ones
+    ``scoring.constants`` had used, so every lookup missed and the combined score came back empty --
+    a silent zero rather than an error.
+    """
+    constants = upstream_module("neurons.validators.scoring.constants")
+    search_type = POOL_SEARCH_TYPE[pool]
+    mode = pool.split(":", 1)[1] if ":" in pool else None
+    for key in constants.POOL_SHARES:
+        key_type, key_mode = key
+        if getattr(key_type, "value", key_type) != search_type:
+            continue
+        if getattr(key_mode, "value", key_mode) == mode:
+            return key
+    raise ScoringUnavailable(f"upstream declares no pool share for {pool!r}")
+
+
 def combine(pool_scores: dict) -> dict:
     """Upstream's ``combine_pool_scores``, called with Kata's four pools.
 
@@ -483,12 +573,5 @@ def combine(pool_scores: dict) -> dict:
     turns four tuples into one number per contestant, and it decides the duel.
     """
     scheduler_module = upstream_module("neurons.validators.scoring.query_scheduler")
-    protocol = upstream_module("desearch.protocol")
-    miner_config = upstream_module("desearch.miner_config")
-
-    qualities: dict = {}
-    for pool, score in pool_scores.items():
-        search_type = miner_config.SearchType(POOL_SEARCH_TYPE[pool])
-        mode = (protocol.SearchMode(pool.split(":", 1)[1]) if ":" in pool else None)
-        qualities[(search_type, mode)] = score.as_tuples()
+    qualities = {pool_share_key(pool): score.as_tuples() for pool, score in pool_scores.items()}
     return scheduler_module.combine_pool_scores(qualities)

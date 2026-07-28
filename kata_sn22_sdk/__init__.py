@@ -1,14 +1,16 @@
 """The SN22 agent SDK: everything a submission is allowed to see, and nothing else.
 
 ```python
-from kata_sn22_sdk import Agent, AiSearchResult, ScraperTextRole, XSearchResult
+from kata_sn22_sdk import Agent, AiSearchResult, ScraperTextRole, XSearchResult, cite
 
 
 class Submission(Agent):
     async def smart_scraper(self, synapse, emit):
         results = self.broker.web_search(synapse.prompt, count=synapse.count)
+        # cite() attaches the evidence that makes a source scoreable at all.
+        sources = [cite(r, [r.get("snippet", "")]) for r in results]
         emit(ScraperTextRole.FINAL_SUMMARY, "...")
-        return AiSearchResult(search_results=results)
+        return AiSearchResult(search_results=sources)
 
     async def twitter_search(self, synapse):
         return XSearchResult(results=self.broker.x_search(synapse.query, count=synapse.count))
@@ -38,6 +40,7 @@ from kata_sn22_sdk.models import (
     Synapse,
     XSearchResult,
     XSearchSynapse,
+    cite,
     synapse_from_input,
 )
 
@@ -59,6 +62,7 @@ __all__ = [
     "Synapse",
     "XSearchResult",
     "XSearchSynapse",
+    "cite",
     "in_sealed_room",
     "synapse_from_input",
 ]

@@ -131,6 +131,33 @@ class XSearchSynapse:
 Synapse = AiSearchSynapse | XSearchSynapse
 
 
+def cite(source: dict, highlights, text: str | None = None) -> dict:
+    """Attach the evidence that makes one source scoreable. **Without this a source scores zero.**
+
+    The validator fetches every link you return, itself, and then checks two things:
+
+    1. every string in ``highlights`` appears **in order** in its own copy of the page;
+    2. every string in ``highlights`` appears **in order** in your ``text``.
+
+    A source that fails either is dropped before it is judged — it does not score badly, it does not
+    score at all. So quote *contiguous, real* spans of the page: reassembling a page's vocabulary
+    into a sentence nobody wrote fails the first check, which is exactly what it is for, and writing
+    ``text`` from somewhere else fails the second.
+
+    ``text`` defaults to the highlights joined, which passes check 2 trivially. Saying something of
+    your own is better — it is what the groundedness judge reads — but it must still contain the
+    highlights in order.
+
+    ```python
+    snippet = result.get("snippet", "")
+    sources.append(cite(result, [snippet]))
+    ```
+    """
+    quotes = [str(entry) for entry in (highlights or []) if str(entry).strip()]
+    return {**source, "highlights": quotes,
+            "text": text if isinstance(text, str) and text else " ".join(quotes)}
+
+
 @dataclass
 class AiSearchResult:
     """What ``smart_scraper`` returns.
@@ -139,8 +166,10 @@ class AiSearchResult:
     leaves alone is derived from what it streamed. See :class:`kata_sn22_sdk.agent.Emit`.
     """
 
-    #: ``{title, link, snippet}`` per web result, in upstream's own shape. The validator fetches
-    #: every link itself, so a link that is not real is worse than one fewer link.
+    #: One entry per web result, in upstream's own shape: ``{title, link, snippet}`` plus the
+    #: evidence fields ``highlights`` and ``text``. The validator fetches every link itself, so a
+    #: link that is not real is worse than one fewer link — and a link with no evidence scores
+    #: nothing at all. Use :func:`cite` to attach it.
     search_results: list = field(default_factory=list)
     #: Raw tweet objects. The validator re-scrapes each one and compares it field by field, so an
     #: edited tweet scores zero rather than less.
