@@ -166,12 +166,20 @@ def test_parity_report_is_clean_and_names_its_boundary():
     assert report["ok"], json.dumps(report, indent=2)
     assert report["upstream_commit"] == snapshot.UPSTREAM_COMMIT
     assert report["case_count"] == len(parity.PARITY_CASES)
-    # The one component that is pinned but not executed must say so, with a reason. A report that
-    # quietly listed it as executed would be the exact overclaim the gate exists to prevent.
+    # Components that are pinned but NOT executed must say so, by name and with a reason. A report
+    # that quietly listed one as executed would be the exact overclaim this gate exists to prevent,
+    # so the set is asserted exactly: adding to it has to be a deliberate edit here.
+    #
+    # Both entries are live validator STEPS rather than pure functions -- one logs to W&B and writes
+    # a metagraph-sized array, the other walks pydantic synapses inside a reward model. Running
+    # either would mean reconstructing a validator. Every INPUT they combine is executed above, and
+    # each is pinned by the digest of its own source text, so an upstream edit still invalidates the
+    # evidence.
     pinned_only = report["pinned_only_components"]
-    assert [component["name"] for component in pinned_only] == ["score_response"]
-    assert pinned_only[0]["note"]
-    assert len(report["executed_components"]) == len(parity.COMPONENTS) - 1
+    assert sorted(component["name"] for component in pinned_only) == [
+        "MIN_MINER_TWEETS", "score_response"]
+    assert all(component["note"] for component in pinned_only)
+    assert len(report["executed_components"]) == len(parity.COMPONENTS) - len(pinned_only)
 
 
 def test_report_is_json_serializable():

@@ -605,6 +605,7 @@
     "MAX_BODY_CHARS": 16000,
     "MAX_CACHE_ENTRIES": 2000,
     "MIN_ARTICLE_CHARS": 200,
+    "MIN_MINER_TWEETS": 2,
     "MODE_BUDGETS": {
       "balanced": 15,
       "deep": 30,
@@ -621,6 +622,7 @@
       "ai_search:fast": 0.54,
       "x_search:-": 0.1
     },
+    "PROMPT_ARTIFACT_PATTERN": "<(?:Question|/Question|Answer|/Answer|Score|/Score)>|SM(?:[-_ ]SCS)?[-_ ]?(?:RDD|PNK|BLE|GRY|GRN)",
     "QUALITY_THRESHOLDS": {
       "ai_search": 0.5,
       "x_search": 0.6
@@ -1542,6 +1544,14 @@
       "upstream_path": "neurons/validators/apify/body_fetch.py",
       "upstream_symbol": "_MIN_ARTICLE_CHARS"
     },
+    "MIN_MINER_TWEETS": {
+      "executed": false,
+      "file_sha256": "afae2fe5460629f9f0cebc56bc6b74a602a7700ac551901d01c7ae519be0bdcc",
+      "symbol_lines": 103,
+      "symbol_sha256": "6d996ca40292eb917e427e4a751026269c854d5bb01b30eb81032e66c1a8dfec",
+      "upstream_path": "neurons/validators/reward/twitter_content_relevance.py",
+      "upstream_symbol": "TwitterContentRelevanceModel.check_tweet_content"
+    },
     "MODE_BUDGETS": {
       "executed": true,
       "file_sha256": "9ce4cb4ec65515045fe825ee0edba09e47efdb3499450aafd8e8d1dcce2188e3",
@@ -1565,6 +1575,14 @@
       "symbol_sha256": "d939e1ec022ec0b78a1a1213ee387c3fe171130dfb3ff838eeeac21b44a12e99",
       "upstream_path": "neurons/validators/scoring/constants.py",
       "upstream_symbol": "POOL_SHARES"
+    },
+    "PROMPT_ARTIFACT_PATTERN": {
+      "executed": true,
+      "file_sha256": "563e38e3907a11fc534cc08c4ff9a2edf4e4455737207c69827922b7030b4305",
+      "symbol_lines": 1,
+      "symbol_sha256": "843066206c5e95d003a183fb5413262e603d885c551477c4e6890d01b9ef1fd8",
+      "upstream_path": "neurons/validators/reward/reward.py",
+      "upstream_symbol": "pattern_to_check"
     },
     "QUALITY_THRESHOLDS": {
       "executed": true,

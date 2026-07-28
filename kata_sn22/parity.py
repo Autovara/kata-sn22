@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kata_sn22 import fetch as _fetch
+from kata_sn22 import tweets as _tweets
 from kata_sn22 import upstream_adapter as adapter
 from kata_sn22.upstream_snapshot import (
     UPSTREAM_COMMIT,
@@ -204,6 +205,18 @@ COMPONENTS: tuple[AdaptedComponent, ...] = (
     AdaptedComponent("CACHE_TTL_SECONDS", "neurons/validators/apify/body_fetch.py", "_CACHE_TTL_S"),
     AdaptedComponent("MAX_CACHE_ENTRIES", "neurons/validators/apify/body_fetch.py",
                      "_MAX_CACHE_ENTRIES"),
+
+    # -- tweet re-scrape ---------------------------------------------------------------------------
+    # X sources are verified by identity, not by excerpt: the validator re-scrapes each tweet and
+    # compares field by field. This is the pattern that rejects a tweet addressing the scorer.
+    AdaptedComponent("PROMPT_ARTIFACT_PATTERN", f"{_REWARD}/reward.py", "pattern_to_check",
+                     note="scoring-harness markup a tweet must not contain"),
+    AdaptedComponent("MIN_MINER_TWEETS", f"{_REWARD}/twitter_content_relevance.py",
+                     "TwitterContentRelevanceModel.check_tweet_content", executed=False,
+                     note="the >=2 tweet floor and the field-by-field comparison, transcribed in "
+                          "kata_sn22.tweets. Not executed because upstream's method is a live "
+                          "reward-model step over pydantic synapses; its inputs (is_valid_tweet, "
+                          "format_text_for_match, pattern_to_check) ARE executed above."),
 
     # -- validity predicates -------------------------------------------------------------------
     AdaptedComponent("format_text_for_match", "desearch/utils.py", "format_text_for_match"),
@@ -681,6 +694,8 @@ def adapter_constants() -> dict:
         "MAX_BODY_CHARS": _fetch.MAX_BODY_CHARS,
         "CACHE_TTL_SECONDS": _fetch.CACHE_TTL_SECONDS,
         "MAX_CACHE_ENTRIES": _fetch.MAX_CACHE_ENTRIES,
+        "PROMPT_ARTIFACT_PATTERN": _tweets.PROMPT_ARTIFACT_PATTERN.pattern,
+        "MIN_MINER_TWEETS": _tweets.MIN_MINER_TWEETS,
     })
 
 

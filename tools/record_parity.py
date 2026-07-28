@@ -306,6 +306,13 @@ def _upstream_case_outputs(case: dict, upstream, weights) -> dict:
 PARITY_SAMPLE_SEED = 20260101
 
 
+def _reward_module():
+    """`reward.py` imports bittensor at module scope; reached lazily through the shim."""
+    from neurons.validators.reward import reward
+
+    return reward
+
+
 def _body_fetch(upstream):
     """`body_fetch` imports bittensor at module scope, so it is reached through the shim and
     resolved lazily -- the same treatment `search_content_relevance` gets."""
@@ -402,6 +409,10 @@ def _upstream_constants(upstream, weights) -> dict:
         "MAX_BODY_CHARS": _body_fetch(upstream)._RAW_CACHE_CHARS,
         "CACHE_TTL_SECONDS": _body_fetch(upstream)._CACHE_TTL_S,
         "MAX_CACHE_ENTRIES": _body_fetch(upstream)._MAX_CACHE_ENTRIES,
+        "PROMPT_ARTIFACT_PATTERN": _reward_module().pattern_to_check,
+        # Upstream's floor is a literal `< 2` inside check_tweet_content rather than a constant, so
+        # it is transcribed here alongside the symbol digest that pins the method it came from.
+        "MIN_MINER_TWEETS": 2,
     })
 
 
