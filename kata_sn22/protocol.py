@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from kata_sn22.upstream_adapter import source_key
+
 #: Bumped whenever a field's meaning changes. A submission built against a different version is
 #: refused, not coerced.
 PROTOCOL_VERSION = 1
@@ -53,7 +55,13 @@ RESULT_TYPES = ("summary", "links", "both")
 #: A document identifier must be STABLE — the same document is the same id in the sealed
 #: snapshot and in a citation — and inert, because it is used as a dict key and printed into
 #: reports.
-DOC_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
+#: A result's live URL. Only http(s): a scheme the validator cannot fetch is a source it cannot
+#: verify, and an unverifiable source must not reach the judge.
+HTTP_URL_RE = re.compile(r"^https?://[^\s<>\"]{1,2040}$")
+
+#: Excerpts a miner may claim per source. A cap because each one is checked against the fetched
+#: body, and an unbounded list is an unbounded amount of the lane's work per result.
+MAX_HIGHLIGHTS_PER_RESULT = 8
 TASK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
@@ -123,6 +131,14 @@ class Task:
     search_type: str
     result_type: str = "both"
     ai_mode: str | None = None
+    #: X search only. ``"Latest"`` additionally requires the results to be in descending time order,
+    #: which upstream scores as an immediate zero when broken.
+    sort: str | None = None
+    #: Optional window the results must fall inside. Enforced against the VALIDATOR's re-scraped
+    #: timestamps, never the miner's -- a date filter checked against a self-reported date is not
+    #: a filter at all.
+    start_date: str | None = None
+    end_date: str | None = None
     #: The round-scoped relay capability: a short-lived, challenge/variant/task-bound token,
     #: never a provider API key. See plan §6.1; the credential boundary itself is SN22-4.
     relay_endpoint: str = ""
@@ -138,6 +154,9 @@ class Task:
             "search_type": self.search_type,
             "result_type": self.result_type,
             "ai_mode": self.ai_mode,
+            "sort": self.sort,
+            "start_date": self.start_date,
+            "end_date": self.end_date,
             "relay": {"endpoint": self.relay_endpoint, "capability": self.relay_capability},
             "limits": self.limits.as_dict(),
         }
@@ -165,25 +184,54 @@ def validate_task(task: Task) -> None:
 
 @dataclass(frozen=True)
 class Citation:
-    """A claim the agent says the snapshot supports. ``doc_id`` must exist in that snapshot."""
+    """A claim the agent says a source supports, named by that source's live URL."""
 
-    doc_id: str
+    link: str
     claim: str
 
     def as_dict(self) -> dict:
-        return {"doc_id": self.doc_id, "claim": self.claim}
+        return {"link": self.link, "claim": self.claim}
 
 
 @dataclass(frozen=True)
 class SearchResult:
-    """One retrieved item. ``doc_id`` ties it to the sealed snapshot rather than to a live URL."""
+    """One retrieved web source, with the evidence the miner must supply for it to be judged.
 
-    doc_id: str
+    ``highlights`` are excerpts the miner claims appear on the page, and ``text`` is what the miner
+    itself wrote about the source. Neither is decoration: the validator fetches the page and
+    requires the highlights to appear IN ORDER in both its own copy and the miner's text before the
+    source is worth paying a judge to score (see
+    :func:`kata_sn22.upstream_adapter.link_meets_evidence`). A result with no highlights has proved
+    nothing and earns nothing.
+    """
+
+    link: str
     title: str
     snippet: str
+    highlights: tuple[str, ...] = ()
+    text: str = ""
 
     def as_dict(self) -> dict:
-        return {"doc_id": self.doc_id, "title": self.title, "snippet": self.snippet}
+        return {"link": self.link, "title": self.title, "snippet": self.snippet,
+                "highlights": list(self.highlights), "text": self.text}
+
+
+@dataclass(frozen=True)
+class TweetResult:
+    """One retrieved tweet, in the shape the validator re-scrapes and compares field by field.
+
+    Carried as the raw fields rather than a normalized object because the comparison IS field by
+    field: anything this layer tidied up would be a difference the check could no longer see.
+    """
+
+    fields: dict
+
+    @property
+    def tweet_id(self) -> str:
+        return str(self.fields.get("id") or "")
+
+    def as_dict(self) -> dict:
+        return dict(self.fields)
 
 
 @dataclass(frozen=True)
@@ -210,6 +258,8 @@ class TaskOutput:
     results: tuple[SearchResult, ...]
     citations: tuple[Citation, ...]
     usage: ToolUsage
+    #: X search only. Verified by re-scraping each tweet by id, never by excerpt.
+    tweets: tuple[TweetResult, ...] = ()
 
     def as_dict(self) -> dict:
         return {
@@ -217,6 +267,7 @@ class TaskOutput:
             "task_id": self.task_id,
             "summary": self.summary,
             "results": [r.as_dict() for r in self.results],
+            "tweets": [t.as_dict() for t in self.tweets],
             "citations": [c.as_dict() for c in self.citations],
             "usage": self.usage.as_dict(),
         }
@@ -267,20 +318,48 @@ def parse_task_output(raw: bytes | str, *, task: Task) -> TaskOutput:
     _require(len(raw_results) <= task.limits.max_results, ErrorClass.EXCESS_OUTPUT,
              f"{len(raw_results)} results exceeds the limit of {task.limits.max_results}")
     results = []
-    seen_docs: set[str] = set()
+    seen_links: set[str] = set()
     for index, item in enumerate(raw_results):
         where = f"results[{index}]"
         _require(isinstance(item, dict), ErrorClass.INVALID_SCHEMA, f"{where} must be an object")
-        doc_id = item.get("doc_id")
-        _require(isinstance(doc_id, str) and bool(DOC_ID_RE.fullmatch(doc_id)),
-                 ErrorClass.INVALID_SCHEMA, f"{where}.doc_id {doc_id!r} is not a stable identifier")
-        # Duplicates would inflate coverage for free: ten copies of one document is one document.
-        _require(doc_id not in seen_docs, ErrorClass.INVALID_SCHEMA,
-                 f"{where}.doc_id {doc_id!r} is repeated")
-        seen_docs.add(doc_id)
-        results.append(SearchResult(doc_id=doc_id,
-                                    title=_text(item.get("title", ""), f"{where}.title"),
-                                    snippet=_text(item.get("snippet", ""), f"{where}.snippet")))
+        link = item.get("link")
+        _require(isinstance(link, str) and bool(HTTP_URL_RE.fullmatch(link)),
+                 ErrorClass.INVALID_SCHEMA, f"{where}.link {link!r} is not an http(s) URL")
+        # Duplicates would inflate coverage for free: ten copies of one page is one page. Compared
+        # by upstream's own source key, so tracking parameters cannot disguise a repeat.
+        key = source_key(link)
+        _require(key not in seen_links, ErrorClass.INVALID_SCHEMA,
+                 f"{where}.link {link!r} repeats an earlier result")
+        seen_links.add(key)
+        raw_highlights = item.get("highlights", [])
+        _require(isinstance(raw_highlights, list), ErrorClass.INVALID_SCHEMA,
+                 f"{where}.highlights must be a list")
+        _require(len(raw_highlights) <= MAX_HIGHLIGHTS_PER_RESULT, ErrorClass.EXCESS_OUTPUT,
+                 f"{where}.highlights exceeds {MAX_HIGHLIGHTS_PER_RESULT}")
+        highlights = tuple(_text(h, f"{where}.highlights[{i}]")
+                           for i, h in enumerate(raw_highlights))
+        results.append(SearchResult(
+            link=link,
+            title=_text(item.get("title", ""), f"{where}.title"),
+            snippet=_text(item.get("snippet", ""), f"{where}.snippet"),
+            highlights=highlights,
+            text=_text(item.get("text", ""), f"{where}.text")))
+
+    raw_tweets = document.get("tweets", [])
+    _require(isinstance(raw_tweets, list), ErrorClass.INVALID_SCHEMA, "tweets must be a list")
+    _require(len(raw_tweets) <= task.limits.max_results, ErrorClass.EXCESS_OUTPUT,
+             f"{len(raw_tweets)} tweets exceeds the limit of {task.limits.max_results}")
+    tweets = []
+    for index, item in enumerate(raw_tweets):
+        where = f"tweets[{index}]"
+        _require(isinstance(item, dict), ErrorClass.INVALID_SCHEMA, f"{where} must be an object")
+        # Shape is NOT validated here beyond "it is an object with an id". Upstream's own
+        # `is_valid_tweet` decides validity during scoring, and a tweet rejected there scores zero
+        # rather than invalidating the whole response -- which is the difference between a miner
+        # that returned one bad tweet and one that returned nothing usable.
+        _require(isinstance(item.get("id"), str) and bool(item.get("id")),
+                 ErrorClass.INVALID_SCHEMA, f"{where}.id must be a non-empty string")
+        tweets.append(TweetResult(fields=dict(item)))
 
     raw_citations = document.get("citations", [])
     _require(isinstance(raw_citations, list), ErrorClass.INVALID_SCHEMA, "citations must be a list")
@@ -290,10 +369,10 @@ def parse_task_output(raw: bytes | str, *, task: Task) -> TaskOutput:
     for index, item in enumerate(raw_citations):
         where = f"citations[{index}]"
         _require(isinstance(item, dict), ErrorClass.INVALID_SCHEMA, f"{where} must be an object")
-        doc_id = item.get("doc_id")
-        _require(isinstance(doc_id, str) and bool(DOC_ID_RE.fullmatch(doc_id)),
-                 ErrorClass.INVALID_SCHEMA, f"{where}.doc_id {doc_id!r} is not a stable identifier")
-        citations.append(Citation(doc_id=doc_id,
+        link = item.get("link")
+        _require(isinstance(link, str) and bool(HTTP_URL_RE.fullmatch(link)),
+                 ErrorClass.INVALID_SCHEMA, f"{where}.link {link!r} is not an http(s) URL")
+        citations.append(Citation(link=link,
                                   claim=_text(item.get("claim", ""), f"{where}.claim")))
 
     raw_usage = document.get("usage", {})
@@ -306,7 +385,8 @@ def parse_task_output(raw: bytes | str, *, task: Task) -> TaskOutput:
                                             "usage.elapsed_seconds"),
     )
     return TaskOutput(protocol_version=PROTOCOL_VERSION, task_id=task.task_id, summary=summary,
-                      results=tuple(results), citations=tuple(citations), usage=usage)
+                      results=tuple(results), tweets=tuple(tweets), citations=tuple(citations),
+                      usage=usage)
 
 
 def _non_negative_int(value: Any, where: str) -> int:

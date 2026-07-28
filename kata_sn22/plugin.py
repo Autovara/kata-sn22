@@ -7,18 +7,22 @@ along with every ``kata.packages.*`` import, because a scorer a candidate can ed
 Everything of substance lives in the SN22-2 protocol modules; this file is the adapter between them
 and the platform's King-of-the-Hill contract:
 
-* ``sample_problems`` seals one challenge — queries drawn from a versioned pool, a frozen corpus,
-  and the relay that serves it. Both contestants get byte-identical tasks from that sealed world.
+* ``sample_problems`` draws one challenge's queries from a versioned pool. Both contestants get
+  byte-identical tasks.
 * ``run_candidate`` executes a submission per task and classifies whatever comes back.
-* ``score`` reduces the attempts to the seven ordered rank signals, measured against the sealed
-  snapshot and the relay's own usage record — never against anything the candidate asserted.
+* ``score`` VERIFIES what came back — fetching the pages itself, checking the miner's excerpts
+  against them, judging what survives, re-scraping claimed tweets — and reduces that to the seven
+  ordered rank signals. Never anything the candidate asserted.
 * ``compare`` / ``beats_king`` apply the fixed lexicographic priority.
 
-**Scoring profile is DETERMINISTIC, not NOISY.** The skeleton was NOISY because it imagined scoring
-against the live web. A sealed snapshot removes that: inside one challenge the same submission
-always scores the same, and ``benchmark_identity`` is the hash that says *which* sealed world it
-was. A new round draws a new world and therefore a new identity, so nothing stale is ever reused —
-but within a world, results are reproducible and auditable, which is what the plan asks for.
+**Scoring profile is NOISY.** It was briefly DETERMINISTIC, on the strength of a sealed corpus this
+adapter invented and upstream does not have. That corpus is gone. SN22 scores live sources with an
+LLM judge, so the same submission does not score identically twice, and labelling it deterministic
+would sanction a cross-challenge score cache that compares a stale king against a fresh challenger.
+
+Fairness comes from somewhere else, and it is upstream's own answer: the validator fetches the
+ground truth ITSELF and verifies both contestants against that same fetch. Freezing the world was
+never required — verifying it independently was.
 """
 from __future__ import annotations
 
@@ -41,12 +45,12 @@ from kata.plugins.contract import (
 )
 
 from kata_sn22 import fixtures, relay_server, sandbox
+from kata_sn22 import judge as judge_module
 from kata_sn22.execution import policy as execution_policy
 from kata_sn22.execution import tee_execution_enabled
 from kata_sn22.gateway import GatewayDenied, Sn22Gateway
 from kata_sn22.manifests import (
     QueryManifest,
-    SnapshotManifest,
     UsageManifest,
     benchmark_identity,
 )
@@ -65,13 +69,14 @@ from kata_sn22.scoring import RANK_SIGNALS, Signals, TaskAttempt, compare_signal
 
 #: Identifies the scoring rules. Part of the benchmark identity, so changing the judge invalidates
 #: every cached score rather than silently re-ranking history.
-JUDGE_POLICY_ID = "sn22-sealed-overlap-v1"
-#: The judge "model". Deterministic offline scoring until SN22-4 wires a real one.
-MODEL_IDENTITY = "sn22-deterministic-judge-0"
+JUDGE_POLICY_ID = "sn22-upstream-evidence-v1"
+#: The judge behind the relevance and groundedness verdicts. Upstream's own model, so a Kata score
+#: and an upstream score are produced by the same grader.
+MODEL_IDENTITY = judge_module.JUDGE_MODEL
 #: The audited upstream this adapter tracks (plan §2; SN22-5 packages it).
 UPSTREAM_COMMIT = "bea9712f58a5fc01c57ec441ce279499529d8bf6"
 #: Bumped whenever this adapter's scoring surface changes.
-PLUGIN_REVISION = "sn22-adapter-1"
+PLUGIN_REVISION = "sn22-adapter-2"
 
 #: Per-signal indifference bands for PROMOTION. A challenger must beat the king by MORE than these.
 #:
@@ -100,18 +105,30 @@ PROMOTION_MARGINS: dict[str, float] = {
 
 @dataclass(frozen=True)
 class Sn22Problems:
-    """One sealed challenge: the questions, the corpus that answers them, and the tasks issued."""
+    """One challenge: the questions both contestants answer, and the identity of the rules.
+
+    There is no corpus. Fairness does not come from freezing the world -- it comes from the
+    validator fetching the ground truth itself and verifying BOTH contestants against that same
+    fetch (see :mod:`kata_sn22.verification`). That is upstream's own model, and it is what a sealed
+    snapshot was standing in for.
+    """
 
     manifest: QueryManifest
-    snapshot: SnapshotManifest
     tasks: tuple[Task, ...]
     challenge_id: str
 
     @property
     def identity(self) -> str:
+        """What makes two challenges comparable: the questions, and the rules used to score them.
+
+        A snapshot digest used to be part of this. It cannot be any more, and should not be: the web
+        moves between rounds, so binding identity to a copy of it would mean no two challenges were
+        ever comparable. What must not move is the QUESTION SET, the judge policy, the model and the
+        upstream commit -- change any of those and a score means something different.
+        """
         return benchmark_identity(
             query_commitment=self.manifest.as_commitment(),
-            snapshot_digest=self.snapshot.digest(),
+            snapshot_digest="",
             judge_policy_id=JUDGE_POLICY_ID,
             model_identity=MODEL_IDENTITY,
             upstream_commit=UPSTREAM_COMMIT,
@@ -227,14 +244,85 @@ def _execute(agent_py: Path, task: Task, *, workdir: Path) -> tuple[bytes, Error
 
 
 class Sn22DesearchPlugin(SubnetPlugin):
-    """Desearch (Bittensor SN22): a sealed, paired search-quality competition."""
+    """Desearch (Bittensor SN22): a paired, independently-verified search-quality competition."""
 
     evaluator_id = "sn22_desearch"
     pack = "sn22__desearch"
     mode = "miner"
-    # Sealed snapshot + fixed queries == reproducible within a challenge. See the module docstring.
-    scoring_profile = ScoringProfile.DETERMINISTIC
+    # Live sources, judged by an LLM: a submission's score drifts run to run. See the module
+    # docstring for why this must not be DETERMINISTIC.
+    scoring_profile = ScoringProfile.NOISY
     validator_identity = f"{PLUGIN_REVISION}/{JUDGE_POLICY_ID}"
+
+    def __init__(self, *, page_transport=None, judge_client=None, tweet_scraper=None,
+                 search_provider=None) -> None:
+        """The three things the VALIDATOR pays for, injected rather than constructed.
+
+        Verification needs to fetch pages, ask a judge, and re-scrape tweets. All three cost money
+        and do network I/O, and the lane's runtime deliberately carries no HTTP client -- so each is
+        a seam. Production wires live ones; calibration wires the cassettes in
+        :mod:`kata_sn22.fetch`, :mod:`kata_sn22.judge` and :mod:`kata_sn22.tweets`.
+
+        None of them defaults to something that "works". A missing seam raises when a round tries to
+        verify, because the alternative -- scoring an unverified answer -- produces a number that
+        looks like a score and means nothing.
+        """
+        self._page_transport = page_transport
+        self._judge_client = judge_client
+        self._tweet_scraper = tweet_scraper
+        #: What answers a candidate's relay search. Under the TEE backend the miner funds its own
+        #: calls inside its room and this stays unset; the gateway then refuses relay searches,
+        #: which is correct — there is nothing for the lane to serve.
+        self._search_provider = search_provider
+        self._fetcher = None
+
+    # ---- verification (what the validator establishes for itself) --------------------------------
+    def _page_fetcher(self):
+        """One fetcher per plugin instance, so KING AND CHALLENGER SHARE ITS CACHE.
+
+        This is the fairness property, not an optimisation: both contestants must be judged against
+        the same bytes. A per-variant fetcher could hand the second one a page that changed since
+        the first was scored, and the difference would be indistinguishable from a scoring
+        difference.
+        """
+        from kata_sn22.fetch import PageFetcher
+
+        if self._fetcher is None:
+            if self._page_transport is None:
+                raise Sn22AgentError(
+                    "no page transport is configured; a round cannot verify a miner's sources "
+                    "without fetching them, and an unverified score is not a score")
+            self._fetcher = PageFetcher(transport=self._page_transport)
+        return self._fetcher
+
+    def _verified(self, attempt: TaskAttempt) -> TaskAttempt:
+        """Attach what the validator independently established about one attempt.
+
+        An attempt with no output is returned unchanged: there is nothing to verify, and spending a
+        fetch or a judge call on it would be paying to confirm an absence.
+        """
+        from dataclasses import replace
+
+        from kata_sn22 import verification as verify
+
+        if attempt.output is None:
+            return attempt
+        task = attempt.task
+        if task.search_type == "x_search":
+            if self._tweet_scraper is None:
+                raise Sn22AgentError(
+                    "no tweet scraper is configured; X results are verified by re-scraping them")
+            result = verify.verify_x_search(
+                attempt.output, scraper=self._tweet_scraper,
+                start_date=task.start_date, end_date=task.end_date)
+        else:
+            if self._judge_client is None:
+                raise Sn22AgentError(
+                    "no judge is configured; source relevance is decided by the judge, not here")
+            result = verify.verify_ai_search(
+                attempt.output, query=task.query,
+                fetcher=self._page_fetcher(), judge_client=self._judge_client)
+        return replace(attempt, verification=result)
 
     # ---- identity and environment ---------------------------------------------------------------
     def environment_spec(self) -> EnvSpec:
@@ -264,10 +352,14 @@ class Sn22DesearchPlugin(SubnetPlugin):
 
     # ---- sealing a challenge --------------------------------------------------------------------
     def sample_problems(self, *, seed: str, config: dict[str, Any]) -> Sn22Problems:
-        """Seal one challenge from the versioned pool and freeze the corpus that answers it."""
+        """Draw one challenge's questions from the versioned pool.
+
+        No corpus is frozen. Both contestants search the live web with their own credentials, and
+        the validator verifies both against sources IT fetches -- upstream's model, and the one a
+        sealed snapshot was standing in for.
+        """
         count = int(config.get("task_count") or 4)
         manifest = fixtures.calibration_manifest(seed=seed, count=count)
-        snapshot = fixtures.calibration_snapshot(manifest)
         limits = Limits(
             max_wall_seconds=int(config.get("max_wall_seconds") or 120),
             max_provider_calls=int(config.get("max_provider_calls") or 8),
@@ -277,11 +369,15 @@ class Sn22DesearchPlugin(SubnetPlugin):
         tasks = tuple(fixtures.tasks_for(manifest, limits=limits))
         for task in tasks:
             validate_task(task)   # a malformed task would misscore BOTH contestants
-        return Sn22Problems(manifest=manifest, snapshot=snapshot, tasks=tasks,
-                            challenge_id=f"sn22-{seed}")
+        return Sn22Problems(manifest=manifest, tasks=tasks, challenge_id=f"sn22-{seed}")
 
     def benchmark_identity(self, problems: Sn22Problems) -> str:
-        """NON-EMPTY: this challenge is reproducible, and this hash says which one it was."""
+        """NON-EMPTY: the question set plus the rules used to score it.
+
+        Not a claim that the challenge is reproducible -- it is not, the web moves and the judge is
+        an LLM. It is the identity of the RULES, so a summary scored under a different judge policy
+        or a different upstream commit is never mistaken for a comparable one.
+        """
         return problems.identity
 
     def execution_order(self, *, problems: Sn22Problems,
@@ -346,7 +442,8 @@ class Sn22DesearchPlugin(SubnetPlugin):
                 f"will not silently run an untrusted agent locally while declaring a TEE")
 
         variant = context.label or "candidate"
-        gateway = Sn22Gateway(snapshot=problems.snapshot, challenge_id=problems.challenge_id,
+        gateway = Sn22Gateway(provider=self._search_provider,
+                              challenge_id=problems.challenge_id,
                               lane_id=self.pack,
                               reservation_calls=self._reservation_calls(problems))
         workdir = sandbox.fresh_workdir(Path(context.output_root).expanduser().resolve(),
@@ -409,8 +506,8 @@ class Sn22DesearchPlugin(SubnetPlugin):
 
     # ---- scoring and ranking --------------------------------------------------------------------
     def score(self, raw: Sn22RawRun, problems: Sn22Problems) -> ScoreCard:
-        signals = score_attempts(list(raw.attempts), snapshot=problems.snapshot,
-                                 usage=raw.usage, variant=raw.variant)
+        attempts = [self._verified(attempt) for attempt in raw.attempts]
+        signals = score_attempts(attempts, usage=raw.usage, variant=raw.variant)
         return ScoreCard(
             # A scalar for the core's coarse ordering; the real decision uses the payload below,
             # because seven ordered signals do not collapse into one number without losing the
@@ -511,20 +608,23 @@ class Sn22DesearchPlugin(SubnetPlugin):
         return {"findings": findings, "passed": not findings} if findings else None
 
     def benchmark_review(self, bundle_files, *, strict):
-        """Anti-memorization: a submission must not ship the answers.
+        """Anti-memorization: a submission must not ship the questions.
 
-        A sealed corpus is only secret while it stays sealed. A submission carrying snapshot
-        document ids has either seen a previous challenge's world or is guessing at ids, and
-        both mean its citations were not earned by retrieval.
+        There is no longer a corpus to memorize -- sources are live and the validator fetches them
+        -- but the QUERY POOL is still finite and versioned. A bundle carrying the pool's queries
+        verbatim has seen the question set, and an agent that recognises a query can answer it from
+        a lookup table rather than by searching.
         """
         reject: list[str] = []
         review: list[str] = []
-        known_ids = {document.doc_id for document in fixtures.SNAPSHOT_DOCUMENTS}
+        known_queries = {query.strip().casefold()
+                         for query in fixtures.query_pool() if len(query.strip()) >= 24}
         for name, content in (bundle_files or {}).items():
-            text = content if isinstance(content, str) else str(content)
-            hits = sorted(doc_id for doc_id in known_ids if doc_id in text)
+            text = (content if isinstance(content, str) else str(content)).casefold()
+            hits = sorted(query for query in known_queries if query in text)
             if hits:
-                message = f"{name} embeds sealed snapshot document id(s): {', '.join(hits[:5])}"
+                message = (f"{name} embeds {len(hits)} pool query/queries verbatim: "
+                           f"{hits[0][:60]!r}")
                 (reject if strict else review).append(message)
         return reject, review, float(len(reject))
 

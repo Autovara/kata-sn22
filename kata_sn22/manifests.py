@@ -1,19 +1,20 @@
-"""The sealed evidence of one SN22 challenge (plan §5.2, SN22-2).
+"""The recorded evidence of one SN22 challenge (plan §5.2, SN22-2).
 
 A paired challenge is only fair if both contestants faced *the same* challenge. That is not
-something you can assert afterwards — the queries are secret, the retrieved world changes minute
-to minute, and the provider bills per call. So each of those three is frozen into a manifest,
-and the manifests are hashed together into a single benchmark identity:
+something you can assert afterwards — the queries are secret and the provider bills per call — so
+each is frozen into a manifest, and the manifests are hashed into a single benchmark identity:
 
 * :class:`QueryManifest` — which questions were asked. Derived deterministically from a versioned
   source plus a round seed, so it is reproducible for an auditor but not predictable by a miner who
   does not hold the source.
-* :class:`SnapshotManifest` — the sealed corpus both sides retrieve from. Immutable within a
-  challenge, so "an identical relay request made by both contestants resolves to identical content"
-  is true by construction rather than by hoping the web held still.
 * :class:`UsageManifest` — what was actually spent, recorded by the RELAY. Both contestants'
   self-reported usage is checked against it; a candidate that under-reports its own cost is caught
   by the party that did the billing.
+
+There was a third: a ``SnapshotManifest`` sealing a corpus both sides retrieved from. It is gone.
+Sources are live, and sameness comes from the validator FETCHING the ground truth itself and
+verifying both contestants against that one fetch (:mod:`kata_sn22.verification`) — which is
+upstream's own model, and does not require pretending the web held still.
 
 **The secrecy rule.** A query manifest travels as a *commitment* — its hash — until the challenge is
 over. :meth:`QueryManifest.as_commitment` is what goes into the benchmark identity and the public
@@ -25,7 +26,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 MANIFEST_SCHEMA_VERSION = 1
 
@@ -116,67 +117,6 @@ def derive_query_manifest(*, source_id: str, source_version: int, round_seed: st
 
 
 @dataclass(frozen=True)
-class SnapshotDocument:
-    """One document in the sealed corpus. ``doc_id`` is what citations and results refer to."""
-
-    doc_id: str
-    title: str
-    text: str
-    #: Topic tokens used to decide, offline and deterministically, whether a document is relevant to
-    #: a query. Stands in for the live retrieval a production round would do.
-    topics: tuple[str, ...] = ()
-
-    def as_dict(self) -> dict:
-        return {"doc_id": self.doc_id, "title": self.title, "text": self.text,
-                "topics": list(self.topics)}
-
-
-@dataclass(frozen=True)
-class SnapshotManifest:
-    """The round-scoped, immutable corpus both contestants retrieve from."""
-
-    snapshot_id: str
-    documents: tuple[SnapshotDocument, ...]
-    #: doc_ids that genuinely answer each task_id. The scoring ground truth, sealed with the corpus.
-    relevant_by_task: dict[str, tuple[str, ...]] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        seen: set[str] = set()
-        for document in self.documents:
-            if document.doc_id in seen:
-                raise ManifestError(f"duplicate doc_id in snapshot: {document.doc_id}")
-            seen.add(document.doc_id)
-        for task_id, doc_ids in self.relevant_by_task.items():
-            missing = sorted(set(doc_ids) - seen)
-            if missing:
-                # Ground truth pointing outside the corpus would make a perfect answer unachievable.
-                raise ManifestError(
-                    f"relevant_by_task[{task_id!r}] cites documents absent from the snapshot: "
-                    f"{', '.join(missing)}")
-
-    def document(self, doc_id: str) -> SnapshotDocument | None:
-        return next((d for d in self.documents if d.doc_id == doc_id), None)
-
-    def contains(self, doc_id: str) -> bool:
-        return self.document(doc_id) is not None
-
-    def relevant(self, task_id: str) -> frozenset[str]:
-        return frozenset(self.relevant_by_task.get(task_id, ()))
-
-    def as_dict(self) -> dict:
-        return {
-            "schema_version": MANIFEST_SCHEMA_VERSION,
-            "snapshot_id": self.snapshot_id,
-            "documents": [d.as_dict() for d in self.documents],
-            "relevant_by_task": {k: sorted(v) for k, v in sorted(self.relevant_by_task.items())},
-        }
-
-    def digest(self) -> str:
-        """Content identity: any byte change is a different snapshot, so a different challenge."""
-        return _sha256(self.as_dict())
-
-
-@dataclass(frozen=True)
 class UsageRecord:
     """What the relay billed for one contestant on one task."""
 
@@ -235,14 +175,21 @@ class UsageManifest:
                 f"only {left}={only_left}, only {right}={only_right}; refusing to decide promotion")
 
 
-def benchmark_identity(*, query_commitment: dict, snapshot_digest: str, judge_policy_id: str,
-                       model_identity: str, upstream_commit: str, plugin_revision: str) -> str:
-    """The single hash that identifies "this exact challenge, under these exact rules".
+def benchmark_identity(*, query_commitment: dict, snapshot_digest: str = "",
+                       judge_policy_id: str, model_identity: str, upstream_commit: str,
+                       plugin_revision: str) -> str:
+    """The single hash that identifies "these exact questions, under these exact rules".
 
-    Plan §5.2 item 3 enumerates what must be bound, and each element is here because changing it
-    alone would change the result while leaving every other input identical: different queries,
-    different corpus, different judging policy, a different model, a different upstream, or a
-    different adapter. If two challenges share this hash they were genuinely the same challenge.
+    Each element is here because changing it alone would change the result while leaving every
+    other input identical: different queries, a different judging policy, a different model, a
+    different upstream, or a different adapter. If two challenges share this hash they were scored
+    by the same rules on the same questions.
+
+    ``snapshot_digest`` is retained and defaults to empty. SN22 no longer freezes a corpus — sources
+    are live and the validator fetches them — so there is nothing to digest, and binding a copy of
+    the web would mean no two challenges were ever comparable. The parameter stays because a subnet
+    that DOES seal a corpus still needs somewhere to bind it, and silently dropping it from the
+    hash would let a sealed-corpus lane's identity stop distinguishing its worlds.
 
     Note the QUERY COMMITMENT is bound, not the queries: the identity is publishable during the
     round, and the commitment already pins the queries by digest.
@@ -253,8 +200,6 @@ def benchmark_identity(*, query_commitment: dict, snapshot_digest: str, judge_po
             raise ManifestError(f"benchmark identity requires a non-empty {name}")
     if not isinstance(query_commitment, dict) or not query_commitment.get("queries_sha256"):
         raise ManifestError("benchmark identity requires a query commitment with a digest")
-    if not snapshot_digest:
-        raise ManifestError("benchmark identity requires a snapshot digest")
     return _sha256({
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "query_commitment": query_commitment,

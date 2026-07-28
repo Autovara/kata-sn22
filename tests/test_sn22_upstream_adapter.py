@@ -23,19 +23,32 @@ OBSERVED = {"weak": 3.0, "medium": 2.0, "strong": 1.0, "invalid": 5.0, "maliciou
 @pytest.fixture
 def world():
     manifest = fixtures.calibration_manifest(count=4)
-    snapshot = fixtures.calibration_snapshot(manifest)
-    return fixtures.tasks_for(manifest), snapshot
+    return fixtures.tasks_for(manifest), _plugin()
 
 
-def _attempts(kind, tasks, snapshot):
+def _plugin():
+    from kata_sn22.fetch import RecordedPages
+    from kata_sn22.plugin import Sn22DesearchPlugin
+
+    recorded = fixtures.recorded_tweets()
+    return Sn22DesearchPlugin(
+        page_transport=RecordedPages(records=fixtures.recorded_pages()),
+        judge_client=fixtures.scripted_judge(),
+        tweet_scraper=lambda ids: {tid: recorded[tid] for tid in ids if tid in recorded})
+
+
+def _attempts(kind, tasks, plugin):
+    """Parsed AND verified: scoring reads only what the validator established for itself, so an
+    attempt that skipped verification would score zero quality and look like a bad answer."""
     attempts = []
-    for task, raw in zip(tasks, fixtures.reference_responses(kind, tasks, snapshot), strict=True):
+    for task, raw in zip(tasks, fixtures.reference_responses(kind, tasks), strict=True):
         try:
-            attempts.append(TaskAttempt(task=task, output=parse_task_output(raw, task=task),
-                                        observed_seconds=OBSERVED[kind]))
+            attempt = TaskAttempt(task=task, output=parse_task_output(raw, task=task),
+                                  observed_seconds=OBSERVED[kind])
         except Exception as exc:                       # noqa: BLE001 - classified below
-            attempts.append(TaskAttempt(task=task, error=exc.error_class,
-                                        observed_seconds=OBSERVED[kind]))
+            attempt = TaskAttempt(task=task, error=exc.error_class,
+                                  observed_seconds=OBSERVED[kind])
+        attempts.append(plugin._verified(attempt))
     return attempts
 
 
@@ -44,8 +57,8 @@ def _usage(tasks):
         UsageRecord("v", task.task_id, 1, 250, 0.002) for task in tasks))
 
 
-def _signals(kind, tasks, snapshot):
-    return score_attempts(_attempts(kind, tasks, snapshot), snapshot=snapshot,
+def _signals(kind, tasks, plugin):
+    return score_attempts(_attempts(kind, tasks, plugin),
                           usage=_usage(tasks), variant="v")
 
 
@@ -58,7 +71,7 @@ def test_scoring_reexports_the_adapter_tables_rather_than_restating_them():
 
 
 def test_task_weight_is_the_upstream_pool_share(world):
-    tasks, _snapshot = world
+    tasks, _plugin = world
     for task in tasks:
         weight = scoring._task_weight(task)
         if task.search_type == "x_search":
@@ -70,35 +83,38 @@ def test_task_weight_is_the_upstream_pool_share(world):
 # ---- the quality signal is the upstream reward-------------------------------------------------
 
 def test_the_ladder_still_orders_on_the_upstream_reward(world):
-    tasks, snapshot = world
-    weak = _signals("weak", tasks, snapshot)
-    medium = _signals("medium", tasks, snapshot)
-    strong = _signals("strong", tasks, snapshot)
+    tasks, plugin = world
+    weak = _signals("weak", tasks, plugin)
+    medium = _signals("medium", tasks, plugin)
+    strong = _signals("strong", tasks, plugin)
     assert weak.sn22_weighted_quality < medium.sn22_weighted_quality < strong.sn22_weighted_quality
-    # A submission that returns everything asked for, all of it relevant, takes no penalty at all.
-    assert strong.sn22_weighted_quality == pytest.approx(1.0)
+    # NOT asserted to be 1.0. A perfect score is no longer reachable, and that is the point: quality
+    # is now a judge's verdict on a SAMPLE of verified sources, so it reflects what a grader thought
+    # of real excerpts rather than recall against an answer key we wrote.
+    assert 0.0 < strong.sn22_weighted_quality <= 1.0
 
 
 def test_a_strong_submission_takes_no_upstream_penalty(world):
-    tasks, snapshot = world
-    detail = _signals("strong", tasks, snapshot).detail
+    tasks, plugin = world
+    detail = _signals("strong", tasks, plugin).detail
     for row in detail["per_task"]:
         assert row["penalties"] == {}, row
 
 
 def test_a_short_result_list_takes_the_count_penalty(world):
     """Upstream's count penalty, reached through the Kata protocol's own ``max_results``."""
-    tasks, snapshot = world
-    rows = _signals("medium", tasks, snapshot).detail["per_task"]
-    assert all(row["penalties"]["count_penalty"] > 0 for row in rows)
+    tasks, plugin = world
+    rows = [row for row in _signals("weak", tasks, plugin).detail["per_task"]
+            if "count_penalty" in row["penalties"]]
+    assert rows, "the weak reference must return fewer results than were asked for"
     # One of five requested results.
     assert rows[0]["penalties"]["count_penalty"] == pytest.approx(0.8)
 
 
 def test_a_summary_with_no_citations_takes_the_structure_penalty(world):
     """Kata's citations ARE the upstream summary's links; a summary with neither is penalised."""
-    tasks, snapshot = world
-    rows = [row for row in _signals("weak", tasks, snapshot).detail["per_task"]
+    tasks, plugin = world
+    rows = [row for row in _signals("weak", tasks, plugin).detail["per_task"]
             if row["search_type"] == "ai_search"]
     assert rows
     assert all(row["penalties"]["summary_structure_penalty"] == 1.0 for row in rows)
@@ -107,8 +123,8 @@ def test_a_summary_with_no_citations_takes_the_structure_penalty(world):
 def test_citing_a_document_it_never_returned_is_an_unsourced_link(world):
     """The malicious fixture cites the answers without retrieving them. Two independent checks must
     catch it: Kata's citation precision, and the upstream summary-structure penalty."""
-    tasks, snapshot = world
-    malicious = _signals("malicious", tasks, snapshot)
+    tasks, plugin = world
+    malicious = _signals("malicious", tasks, plugin)
     assert malicious.sn22_citation_precision == 0.0
     # Only AI search carries a summary; X search has no summary component upstream, which is why
     # the citation-precision signal is the check that covers BOTH search types.
@@ -120,8 +136,8 @@ def test_citing_a_document_it_never_returned_is_an_unsourced_link(world):
 
 def test_an_invalid_run_is_not_sent_through_the_upstream_components(world):
     """A run with no output has no response shape; a penalty for one would be a fiction."""
-    tasks, snapshot = world
-    rows = _signals("invalid", tasks, snapshot).detail["per_task"]
+    tasks, plugin = world
+    rows = _signals("invalid", tasks, plugin).detail["per_task"]
     assert rows and all("penalties" not in row for row in rows)
     assert all(row["reward"] == 0.0 and row["reason"] for row in rows)
 
@@ -129,8 +145,8 @@ def test_an_invalid_run_is_not_sent_through_the_upstream_components(world):
 # ---- what Kata excludes, and why---------------------------------------------------------------
 
 def test_excluded_components_are_declared_in_the_result(world):
-    tasks, snapshot = world
-    detail = _signals("strong", tasks, snapshot).detail
+    tasks, plugin = world
+    detail = _signals("strong", tasks, plugin).detail
     assert detail["upstream_penalties_excluded"] == ["timeout_penalty",
                                                      "min_realistic_time_penalty"]
     assert detail["upstream_performance_multiplier_applied"] is False
@@ -152,15 +168,15 @@ def test_applied_and_excluded_penalties_partition_the_upstream_set():
 
 def test_latency_does_not_leak_into_the_quality_signal(world):
     """Latency is signal 7. If it also moved signal 2, a fast agent would outrank a better one."""
-    tasks, snapshot = world
+    tasks, plugin = world
     fast = score_attempts(
         [TaskAttempt(task=a.task, output=a.output, observed_seconds=0.01)
-         for a in _attempts("strong", tasks, snapshot)],
-        snapshot=snapshot, usage=_usage(tasks), variant="v")
+         for a in _attempts("strong", tasks, plugin)],
+        usage=_usage(tasks), variant="v")
     slow = score_attempts(
         [TaskAttempt(task=a.task, output=a.output, observed_seconds=119.0)
-         for a in _attempts("strong", tasks, snapshot)],
-        snapshot=snapshot, usage=_usage(tasks), variant="v")
+         for a in _attempts("strong", tasks, plugin)],
+        usage=_usage(tasks), variant="v")
     assert fast.sn22_weighted_quality == slow.sn22_weighted_quality
     assert fast.sn22_latency_seconds < slow.sn22_latency_seconds
 
@@ -195,20 +211,28 @@ def test_a_narrowing_cannot_add_a_penalty_the_search_type_lacks():
 
 # ---- the translation seam----------------------------------------------------------------------
 
-def test_snapshot_urls_are_stable_and_inert():
-    assert scoring.snapshot_url("doc-a") == "sn22-snapshot://doc-a"
-    # Lowercase and slash-free, so upstream's URL normalization is a no-op rather than a surprise.
-    assert adapter.normalize_source_url(scoring.snapshot_url("doc-a")) == "sn22-snapshot://doc-a"
+def test_a_result_reaches_the_upstream_components_as_its_own_live_link() -> None:
+    """There is no translation layer any more. A source is identified by the URL the miner returned,
+    which is also the URL the validator fetched -- so "did the miner return this source" means the
+    same thing on both sides by construction rather than by a mapping that could drift."""
+    task = fixtures.tasks_for(fixtures.calibration_manifest())[0]
+    attempt = TaskAttempt(task=task, observed_seconds=1.0, output=parse_task_output(
+        fixtures.reference_responses("strong", [task])[0], task=task))
+    response = scoring._upstream_response(attempt)
+    if response.kind == "ai_search":
+        links = {item["link"] for item in response.search_results}
+        assert links == {result.link for result in attempt.output.results}
+        assert all(link.startswith("https://") for link in links)
 
 
 def test_x_search_tasks_are_scored_on_content_relevance_alone(world):
-    tasks, snapshot = world
+    tasks, plugin = world
     x_tasks = [task for task in tasks if task.search_type == "x_search"]
     if not x_tasks:
         pytest.skip("this seed drew no X search task")
-    attempts = {a.task.task_id: a for a in _attempts("strong", tasks, snapshot)}
+    attempts = {a.task.task_id: a for a in _attempts("strong", tasks, plugin)}
     for task in x_tasks:
-        response = scoring._upstream_response(attempts[task.task_id], snapshot=snapshot)
+        response = scoring._upstream_response(attempts[task.task_id])
         assert response.kind == "x_search"
         assert adapter.reward_weights_for(response) == (1.0,)
         # Every synthesized tweet must pass the upstream schema check, or the lane would be
@@ -217,13 +241,13 @@ def test_x_search_tasks_are_scored_on_content_relevance_alone(world):
 
 
 def test_a_links_only_task_drops_the_summary_component(world):
-    tasks, snapshot = world
+    tasks, plugin = world
     from dataclasses import replace
 
     task = replace(tasks[0], result_type="links")
     attempt = TaskAttempt(task=task, observed_seconds=1.0, output=parse_task_output(
-        fixtures.reference_responses("strong", [task], snapshot)[0], task=task))
-    response = scoring._upstream_response(attempt, snapshot=snapshot)
+        fixtures.reference_responses("strong", [task])[0], task=task))
+    response = scoring._upstream_response(attempt)
     assert response.result_type == adapter.RESULT_TYPE_ONLY_LINKS
     assert adapter.reward_weights_for(response) == (1.0, 0.0)
     assert adapter.summary_structure_penalty(response) == 0.0

@@ -31,7 +31,17 @@ SEED = "sn22-plugin-test-0001"
 
 @pytest.fixture
 def plugin() -> Sn22DesearchPlugin:
-    return Sn22DesearchPlugin()
+    """Wired to the recorded verification world: the scoring path is production's, only the pages,
+    verdicts and re-scrapes are replayed rather than fetched."""
+    from kata_sn22 import fixtures
+    from kata_sn22.fetch import RecordedPages
+
+    tweets = fixtures.recorded_tweets()
+    return Sn22DesearchPlugin(
+        search_provider=fixtures.search_provider(),
+        page_transport=RecordedPages(records=fixtures.recorded_pages()),
+        judge_client=fixtures.scripted_judge(),
+        tweet_scraper=lambda ids: {tid: tweets[tid] for tid in ids if tid in tweets})
 
 
 @pytest.fixture
@@ -182,14 +192,23 @@ def test_the_declared_entry_point_matches_the_package():
     assert isinstance(resolved, Sn22DesearchPlugin)
 
 
-def test_the_profile_is_deterministic_with_a_non_empty_identity(plugin, problems):
-    """A sealed world is reproducible; the identity says which world it was."""
-    assert plugin.scoring_profile is ScoringProfile.DETERMINISTIC
+def test_the_profile_is_noisy_with_a_non_empty_identity(plugin, problems):
+    """NOISY, and it must stay NOISY.
+
+    SN22 scores live sources with an LLM judge, so the same submission does not score identically
+    twice. Labelling it DETERMINISTIC would sanction a cross-challenge score cache — the platform
+    would compare a stale king's cached score against a freshly-scored challenger, which is the one
+    comparison that is never fair.
+
+    The identity is still non-empty and still meaningful: it says which QUESTIONS were asked under
+    which RULES, which is what makes two summaries comparable at all.
+    """
+    assert plugin.scoring_profile is ScoringProfile.NOISY
     identity = plugin.benchmark_identity(problems)
     assert identity and len(identity) == 64
 
 
-def test_a_new_seed_is_a_new_sealed_world(plugin):
+def test_a_new_seed_is_a_new_question_set(plugin):
     a = plugin.sample_problems(seed="round-a", config={})
     b = plugin.sample_problems(seed="round-b", config={})
     assert plugin.benchmark_identity(a) != plugin.benchmark_identity(b)
@@ -355,15 +374,23 @@ def test_static_screen_is_deterministic(plugin, tmp_path):
 
 
 # ---- anti-memorization --------------------------------------------------------------------------
-def test_benchmark_review_rejects_an_embedded_snapshot_id(plugin):
-    reject, review, score = plugin.benchmark_review({"agent.py": "doc-kata-1 is the answer"},
-                                                    strict=True)
+def test_benchmark_review_rejects_an_embedded_pool_query(plugin):
+    """There is no corpus to memorize any more, but the QUERY POOL is still finite and versioned.
+    An agent that recognises a query can answer it from a lookup table instead of by searching."""
+    from kata_sn22 import fixtures
+
+    query = next(q for q in fixtures.query_pool() if len(q) >= 24)
+    reject, review, score = plugin.benchmark_review(
+        {"agent.py": f'ANSWERS = {{"{query}": "..."}}'}, strict=True)
     assert reject and score > 0
     assert not review
 
 
 def test_benchmark_review_only_reviews_when_not_strict(plugin):
-    reject, review, _score = plugin.benchmark_review({"agent.py": "doc-kata-1"}, strict=False)
+    from kata_sn22 import fixtures
+
+    query = next(q for q in fixtures.query_pool() if len(q) >= 24)
+    reject, review, _score = plugin.benchmark_review({"agent.py": query}, strict=False)
     assert not reject and review
 
 

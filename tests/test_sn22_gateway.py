@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from kata_sn22 import sandbox
-from kata_sn22.fixtures import calibration_manifest, calibration_snapshot, tasks_for
+from kata_sn22.fixtures import calibration_manifest, tasks_for
 from kata_sn22.gateway import (
     CAPABILITY_RE,
     PROVIDER_CREDENTIAL_NAMES,
@@ -36,14 +36,23 @@ SIGNING_KEY = b"sn22-test-signing-key"
 @pytest.fixture
 def world():
     manifest = calibration_manifest()
-    snapshot = calibration_snapshot(manifest)
-    return manifest, snapshot, tasks_for(manifest)
+    return manifest, _provider(), tasks_for(manifest)
+
+
+def _provider():
+    """A stand-in search provider. The gateway is a BROKER -- what it must get right is the
+    capability check, the billing and the redaction, none of which depend on who answers."""
+    def _search(query, limit):
+        return [{"link": f"https://example.test/{index}", "title": f"Result {index} for {query}",
+                 "snippet": "a snippet"} for index in range(limit)]
+
+    return _search
 
 
 @pytest.fixture
 def gateway(world):
-    _manifest, snapshot, _tasks = world
-    return Sn22Gateway(snapshot=snapshot, challenge_id="c1")
+    _manifest, provider, _tasks = world
+    return Sn22Gateway(provider=provider, challenge_id="c1")
 
 
 # ---- the end-to-end path works at all ------------------------------------------------------------
@@ -52,7 +61,9 @@ def test_a_capability_buys_exactly_one_search(gateway, world):
     capability = gateway.issue(variant="king", task_id=tasks[0].task_id, max_calls=2)
     assert CAPABILITY_RE.fullmatch(capability.token)
     results = gateway.search(capability.token, tasks[0].query)
-    assert results and all({"doc_id", "title", "snippet"} == set(r) for r in results)
+    # The gateway hands back the PROVIDER's fields, not a shape of its own: a broker that
+    # reformatted results would be deciding what a search returns, which is the provider's job.
+    assert results and all({"link", "title", "snippet"} == set(r) for r in results)
 
 
 def test_both_contestants_receive_identical_content(gateway, world):
@@ -241,9 +252,9 @@ def test_a_capability_stops_working_when_the_challenge_closes(gateway, world):
 
 def test_a_capability_expires_on_its_own(world):
     """Short-lived, so a token captured from a log is worthless minutes later."""
-    _m, snapshot, tasks = world
+    _m, provider, tasks = world
     now = [1000.0]
-    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", capability_ttl_seconds=60.0,
+    gateway = Sn22Gateway(provider=provider, challenge_id="c1", capability_ttl_seconds=60.0,
                           clock=lambda: now[0])
     capability = gateway.issue(variant="king", task_id=tasks[0].task_id, max_calls=9)
     gateway.search(capability.token, tasks[0].query)
@@ -272,8 +283,8 @@ def test_the_per_task_quota_is_enforced(gateway, world):
 def test_the_challenge_reservation_is_a_hard_ceiling(world):
     """Per-task quotas bound one task. Only the reservation bounds the CHALLENGE, and that is the
     number that was actually approved and paid for."""
-    _m, snapshot, tasks = world
-    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", reservation_calls=3)
+    _m, provider, tasks = world
+    gateway = Sn22Gateway(provider=provider, challenge_id="c1", reservation_calls=3)
     spent = 0
     with pytest.raises(GatewayDenied, match="reservation exhausted"):
         for _round in range(10):
@@ -286,8 +297,8 @@ def test_the_challenge_reservation_is_a_hard_ceiling(world):
 
 def test_minting_more_capabilities_does_not_raise_the_ceiling(world):
     """The obvious way around a per-task quota is more tasks. The reservation still holds."""
-    _m, snapshot, tasks = world
-    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", reservation_calls=2)
+    _m, provider, tasks = world
+    gateway = Sn22Gateway(provider=provider, challenge_id="c1", reservation_calls=2)
     tokens = [gateway.issue(variant="king", task_id=t.task_id, max_calls=50).token for t in tasks]
     served = 0
     for token in tokens:

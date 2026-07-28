@@ -3,10 +3,11 @@
 Two things live here, and the separation matters.
 
 **The signals** are the seven ordered quantities a challenge publishes (§5.4). They are computed
-from the sealed snapshot, not from anything the candidate asserts: a citation counts only if the
-snapshot actually contains the document, and relevance is measured against the snapshot's own
-ground truth.
-An agent cannot improve its score by claiming a better one.
+from what the VALIDATOR independently established -- pages it fetched itself, excerpts it checked
+against those pages, verdicts a judge gave on them, tweets it re-scraped (see
+:mod:`kata_sn22.verification`) -- never from anything the candidate asserts. A citation counts only
+if the source was returned AND survived the evidence check; quality is what the judge said about
+verified excerpts. An agent cannot improve its score by claiming a better one.
 
 **The comparator** decides a crown from those signals by fixed lexicographic priority — validity
 first, then quality, then precision, coverage, invalid runs, cost, latency. Lexicographic rather
@@ -23,7 +24,7 @@ What that buys, concretely: ``sn22_weighted_quality`` is now the upstream reward
 summary split, the ONLY_LINKS reweighting, the component floors, the applicable penalties, and the
 pool shares — rather than a Kata-shaped approximation of it. It still does NOT claim to reproduce
 on-chain emissions, which are pool-relative and depend on miner population; Kata compares exactly
-two agents on one sealed challenge.
+two agents on one challenge.
 """
 from __future__ import annotations
 
@@ -31,7 +32,7 @@ import math
 from dataclasses import dataclass, field
 
 from kata_sn22 import upstream_adapter as upstream
-from kata_sn22.manifests import SnapshotManifest, UsageManifest
+from kata_sn22.manifests import UsageManifest
 from kata_sn22.protocol import ErrorClass, Task, TaskOutput
 
 #: Re-exported from the adapter so there is exactly one definition of each weight in the package.
@@ -40,19 +41,13 @@ AI_MODE_WEIGHTS = upstream.AI_MODE_WEIGHTS
 AI_QUALITY_WEIGHTS = {"content_relevance": upstream.AI_CONTENT_WEIGHT,
                       "summary_relevance": upstream.AI_SUMMARY_WEIGHT}
 
-#: A stable, inert URL for a sealed-snapshot document. The upstream penalties are written against
-#: web results, identified by link; the sealed corpus identifies documents by ``doc_id``. One scheme
-#: maps between them, so "did the miner return this source" means the same thing on both sides.
-#: Not resolvable, and not meant to be — nothing dereferences it.
-SNAPSHOT_URL_SCHEME = "sn22-snapshot"
-
 #: The upstream penalties whose inputs a sealed Kata challenge actually carries (plan §5.3: retain
 #: the upstream components that are *included*). Two are deliberately absent:
 #:
-#: * ``timeout_penalty`` and ``min_realistic_time_penalty`` are about live provider latency. A
-#:   sealed offline snapshot has none to measure, and Kata already publishes
-#:   ``sn22_latency_seconds`` as its own ranked signal. Folding latency into quality (priority 2)
-#:   as well would let a fast agent outrank a better one on the signal meant to be about answers.
+#: * ``timeout_penalty`` and ``min_realistic_time_penalty`` are about provider latency, which Kata
+#:   already publishes as its own ranked signal, ``sn22_latency_seconds``. Folding latency into
+#:   quality (priority 2) as well would let a fast agent outrank a better one on the signal that is
+#:   meant to be about answers.
 #:
 #: The performance multiplier is excluded for the same reason. Both exclusions are recorded in the
 #: score detail rather than left implicit, so a reader of a challenge result can see what was and
@@ -110,6 +105,11 @@ class TaskAttempt:
     output: TaskOutput | None = None
     error: ErrorClass | None = None
     observed_seconds: float = 0.0
+    #: What the VALIDATOR established about this answer by fetching, checking evidence, judging and
+    #: re-scraping (:mod:`kata_sn22.verification`). Attached to the attempt rather than passed
+    #: alongside it so that scoring stays a pure function of what was verified -- there is no path
+    #: where a signal is computed from something the candidate merely asserted.
+    verification: object | None = None
 
     def __post_init__(self) -> None:
         if (self.output is None) == (self.error is None):
@@ -153,34 +153,6 @@ class Signals:
                      for name, higher in RANK_SIGNALS)
 
 
-def _relevance(output: TaskOutput, snapshot: SnapshotManifest, task: Task) -> tuple[float, float]:
-    """(content_relevance, summary_relevance) for one answered task, measured against the snapshot.
-
-    Content relevance is recall over the sealed ground truth: of the documents that genuinely answer
-    this query, how many did the agent return. Summary relevance is how much of that same ground
-    truth the written summary actually reflects, checked by title token overlap — a stand-in for the
-    LLM judge, chosen because it is deterministic and offline, which is what SN22-2 requires.
-    """
-    truth = snapshot.relevant(task.task_id)
-    if not truth:
-        return 0.0, 0.0
-    returned = {result.doc_id for result in output.results}
-    content = len(truth & returned) / len(truth)
-
-    summary_words = {word.strip(".,:;!?").lower() for word in output.summary.split()}
-    covered = 0
-    for doc_id in truth:
-        document = snapshot.document(doc_id)
-        if document is None:
-            continue
-        title_words = {word.strip(".,:;!?").lower() for word in document.title.split()}
-        # A title is "reflected" when the summary mentions most of its distinctive words. Simple and
-        # deterministic; the production judge replaces this behind the same interface.
-        if title_words and len(title_words & summary_words) / len(title_words) >= 0.5:
-            covered += 1
-    return content, covered / len(truth)
-
-
 def _task_weight(task: Task) -> float:
     """The upstream pool share for one task's category (§5.3), from the pinned tables."""
     if task.search_type == "x_search":
@@ -188,37 +160,32 @@ def _task_weight(task: Task) -> float:
     return upstream.POOL_SHARES.get(("ai_search", task.ai_mode), 0.0)
 
 
-def snapshot_url(doc_id: str) -> str:
-    """The stable link a sealed document is known by inside the upstream penalties."""
-    return f"{SNAPSHOT_URL_SCHEME}://{doc_id}"
-
-
 def _upstream_summary(output: TaskOutput) -> str:
     """Kata's summary rendered the way the upstream summary checks expect to read it.
 
     Upstream miners return prose with markdown links, and `summary_structure_penalty` asks whether
     every link is one the miner itself returned. Kata's protocol carries the same claim in a
-    structured ``citations`` array instead, which is strictly better to score against — so the
-    citations are rendered back into markdown links rather than the penalty being dropped.
+    structured ``citations`` array as well, so the citations are appended as markdown links rather
+    than the penalty being dropped.
 
-    The translation is faithful in both directions that matter: a summary with no citations has no
-    links and is penalised exactly as an upstream summary with none would be, and a citation to a
-    document the agent never returned is a link outside its own sources, which is the same finding
-    the penalty was written to make.
+    Appended, not substituted: a summary that already contains its own markdown links keeps them,
+    because those are what the groundedness judge reads and what `cited_urls_normalized` extracts.
     """
-    links = " ".join(f"[{citation.doc_id}]({snapshot_url(citation.doc_id)})"
-                     for citation in output.citations)
+    links = " ".join(f"[{index}]({citation.link})"
+                     for index, citation in enumerate(output.citations, 1))
     return f"{output.summary}\n\n{links}".strip() if links else output.summary
 
 
-def _upstream_response(attempt: TaskAttempt, *,
-                       snapshot: SnapshotManifest) -> upstream.UpstreamResponse:
+def _upstream_response(attempt: TaskAttempt) -> upstream.UpstreamResponse:
     """One Kata attempt as the response shape the pinned upstream components score.
 
-    Only the fields the adapted components read are populated, and every one of them comes from the
-    lane or the sealed snapshot — never from an unvalidated candidate claim. ``count`` is the number
-    of results the task ASKED for, which is the same ``max_results`` the agent was told, so the
-    count penalty measures a shortfall against a published request rather than against a secret.
+    Only the fields the adapted components read are populated. The results are the miner's OWN
+    claims -- which is correct here and only here: these components are the cheap structural
+    penalties (duplicate ids, schema, sort order, domain filter), and their entire job is to inspect
+    what the miner said. Whether any of it is TRUE is decided elsewhere, by fetching and judging.
+
+    ``count`` is the number of results the task ASKED for, so the count penalty measures a shortfall
+    against a published request rather than against a secret.
     """
     task = attempt.task
     output = attempt.output
@@ -226,25 +193,14 @@ def _upstream_response(attempt: TaskAttempt, *,
     summary = _upstream_summary(output) if output is not None else ""
 
     if task.search_type == "x_search":
-        # The sealed corpus has documents, not tweets, so each result is rendered as the tweet the
-        # upstream schema check expects. created_at descends with result order, which keeps a
-        # sort-order check meaningful if a future challenge config ever requests one.
-        tweets = tuple({
-            "id": result.doc_id,
-            "text": result.snippet,
-            "reply_count": 0, "retweet_count": 0, "like_count": 0,
-            "quote_count": 0, "bookmark_count": 0,
-            "url": snapshot_url(result.doc_id),
-            "created_at": upstream.synthetic_created_at(index),
-            "is_quote_tweet": False, "is_retweet": False,
-            "user": {"id": f"sn22:{result.doc_id}", "username": "sn22-snapshot"},
-        } for index, result in enumerate(results))
+        tweets = tuple(tweet.as_dict() for tweet in (output.tweets if output is not None else ()))
         return upstream.UpstreamResponse(
             kind="x_search", count=task.limits.max_results, results=tweets,
+            sort=task.sort,
             max_execution_time=task.limits.max_wall_seconds,
             process_time=attempt.observed_seconds, successful=output is not None)
 
-    search_results = tuple({"title": result.title, "link": snapshot_url(result.doc_id),
+    search_results = tuple({"title": result.title, "link": result.link,
                             "snippet": result.snippet} for result in results)
     return upstream.UpstreamResponse(
         kind="ai_search", mode=task.ai_mode, count=task.limits.max_results,
@@ -256,16 +212,16 @@ def _upstream_response(attempt: TaskAttempt, *,
         process_time=attempt.observed_seconds, successful=output is not None)
 
 
-def upstream_score_for(attempt: TaskAttempt, *, snapshot: SnapshotManifest,
+def upstream_score_for(attempt: TaskAttempt, *,
                        components: tuple[float, ...]) -> upstream.UpstreamScore:
     """Score one attempt through the pinned upstream components."""
-    response = _upstream_response(attempt, snapshot=snapshot)
+    response = _upstream_response(attempt)
     return upstream.score_response(response, components,
                                    penalty_names=KATA_APPLICABLE_PENALTIES,
                                    apply_performance=False)
 
 
-def score_attempts(attempts: list[TaskAttempt], *, snapshot: SnapshotManifest,
+def score_attempts(attempts: list[TaskAttempt], *,
                    usage: UsageManifest, variant: str) -> Signals:
     """Turn one contestant's attempts into the seven published signals.
 
@@ -317,12 +273,17 @@ def score_attempts(attempts: list[TaskAttempt], *, snapshot: SnapshotManifest,
         self_reported_calls += output.usage.provider_calls
         self_reported_tokens += output.usage.tokens
 
-        content, summary_relevance = _relevance(output, snapshot, attempt.task)
+        # What the VALIDATOR established, not what the candidate claimed. An attempt with no
+        # verification scores zero quality rather than defaulting to something generous: it means
+        # nothing was checked, and an unchecked answer has earned nothing.
+        verification = attempt.verification
+        content = float(getattr(verification, "content_relevance", 0.0) or 0.0)
+        summary_relevance = float(getattr(verification, "summary_relevance", 0.0) or 0.0)
         # X quality is content relevance only, per the upstream breakdown; AI search carries both
         # and the adapter applies the 0.60/0.40 split (or (1.0, 0.0) for a links-only request).
         components = ((content,) if attempt.task.search_type == "x_search"
                       else (content, summary_relevance))
-        score = upstream_score_for(attempt, snapshot=snapshot, components=components)
+        score = upstream_score_for(attempt, components=components)
         weighted_quality += weight * score.reward
         if score.quality_gate <= 0.0 < score.reward:
             gated_tasks += 1
@@ -339,20 +300,26 @@ def score_attempts(attempts: list[TaskAttempt], *, snapshot: SnapshotManifest,
                           if value > 0},
         })
 
-        truth = snapshot.relevant(attempt.task.task_id)
-        returned = {result.doc_id for result in output.results}
-        coverage_sum += (len(truth & returned) / len(truth)) if truth else 0.0
+        # Coverage: the share of what the agent CLAIMED that survived independent verification.
+        # With live search there is no sealed answer key to measure recall against -- upstream has
+        # none either -- so the honest question is not "how much of the truth did you find" but
+        # "how much of what you reported turned out to be real".
+        verified_links = {
+            source.link for source in getattr(verification, "sources", []) or []
+            if source.evidence_ok
+        }
+        returned = {result.link for result in output.results} or {
+            f"tweet:{tweet.tweet_id}" for tweet in output.tweets}
+        coverage_sum += (len(verified_links & returned) / len(returned)) if returned else 0.0
 
         for citation in output.citations:
             cited += 1
-            # Three conditions, and dropping any one of them opens a way to cite without searching:
-            #   * the snapshot holds the document      -> no fabricated ids;
-            #   * it genuinely answers THIS task       -> no citing a real document for any query;
-            #   * the agent actually RETURNED it       -> no claiming support for documents it never
-            #     retrieved, which is the cheapest attack of the three because the relevant ids can
-            #     often be guessed from the query alone.
-            if (snapshot.contains(citation.doc_id) and citation.doc_id in truth
-                    and citation.doc_id in returned):
+            # Two conditions, and dropping either opens a way to cite without searching:
+            #   * the agent actually RETURNED the source -> no claiming support from a page it
+            #     never retrieved, which is the cheapest attack because a plausible URL is free;
+            #   * that source PASSED EVIDENCE           -> no citing a page whose claimed excerpts
+            #     are not on it, which is citing a real URL for text nobody wrote.
+            if citation.link in returned and citation.link in verified_links:
                 cited_supported += 1
 
     quality = weighted_quality / total_weight if total_weight > 0 else 0.0

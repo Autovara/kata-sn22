@@ -114,7 +114,12 @@ def _request(payload: dict, *, endpoint: str | None = None,
 
 def search(query: str, *, limit: int = 10, capability: str | None = None,
            endpoint: str | None = None, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> list[dict]:
-    """Search the round's sealed corpus. Returns a list of ``{doc_id, title, snippet}``.
+    """Search through the lane's gateway. Returns whatever the provider returned, minus secrets.
+
+    Results are the PROVIDER's own shape -- a web search returns ``{link, title, snippet}``, an X
+    search returns tweet fields -- because a relay that reformatted them would be deciding what a
+    search returns, which is not its job. Every result is required to be an object with at least one
+    field; an empty object is dropped, since an agent can do nothing with it.
 
     The capability defaults to the one the lane put in the environment, so the common call is
     ``sn22_relay.search("my query", limit=5)`` and an agent never handles a token at all.
@@ -123,7 +128,7 @@ def search(query: str, *, limit: int = 10, capability: str | None = None,
     document = _request({"op": "search", "capability": token, "query": query, "limit": int(limit)},
                         endpoint=endpoint, timeout=timeout)
     results = document.get("results")
-    return [item for item in (results or []) if isinstance(item, dict) and item.get("doc_id")]
+    return [item for item in (results or []) if isinstance(item, dict) and item]
 
 
 def quota(capability: str | None = None, *, endpoint: str | None = None,

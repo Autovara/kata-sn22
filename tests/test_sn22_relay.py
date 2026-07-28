@@ -27,14 +27,41 @@ from kata_sn22.plugin import Sn22DesearchPlugin
 
 @pytest.fixture
 def world():
-    manifest = fixtures.calibration_manifest(count=4)
-    return manifest, fixtures.calibration_snapshot(manifest)
+    return fixtures.calibration_manifest(count=4), _provider()
+
+
+def _verifying_plugin(provider):
+    """A plugin wired end to end: a real relay+gateway in front of ``provider``, and the RECORDED
+    verification world behind it. The relay half is what this file tests; the verification half is
+    supplied so a scored run is possible at all without a network."""
+    from kata_sn22.fetch import RecordedPages
+    from kata_sn22.plugin import Sn22DesearchPlugin
+
+    tweets = fixtures.recorded_tweets()
+    return Sn22DesearchPlugin(
+        search_provider=provider,
+        page_transport=RecordedPages(records=fixtures.recorded_pages()),
+        judge_client=fixtures.scripted_judge(),
+        tweet_scraper=lambda ids: {tid: tweets[tid] for tid in ids if tid in tweets})
+
+
+def _provider(results=None):
+    """A stand-in search provider. The relay is a TRANSPORT and the gateway is a BROKER: what they
+    must get right is the capability check, the billing and the redaction, none of which depend on
+    who answers the query."""
+    def _search(query, limit):
+        if results is not None:
+            return list(results)
+        return [{"link": f"https://example.test/{index}", "title": f"Result {index} for {query}",
+                 "snippet": "a snippet"} for index in range(limit)]
+
+    return _search
 
 
 @pytest.fixture
 def relay(world, tmp_path):
-    _manifest, snapshot = world
-    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", reservation_calls=50)
+    _manifest, provider = world
+    gateway = Sn22Gateway(provider=provider, challenge_id="c1", reservation_calls=50)
     workdir = tmp_path / "work"
     workdir.mkdir()
     server = relay_server.RelayServer(gateway, workdir).start()
@@ -52,7 +79,9 @@ def test_a_capability_can_search_over_the_socket(relay):
     results = relay_client.search("bittensor subnet emissions schedule", limit=5,
                                   capability=capability.token, endpoint=server.endpoint)
     assert results
-    assert all(set(item) == {"doc_id", "title", "snippet"} for item in results)
+    # The PROVIDER's own fields reach the agent unchanged: a relay that reformatted results
+    # would be deciding what a search returns.
+    assert all(set(item) == {"link", "title", "snippet"} for item in results)
 
 
 def test_the_endpoint_is_a_path_not_a_url(relay):
@@ -118,8 +147,8 @@ def test_a_capability_dies_with_the_challenge(relay):
 
 def test_spending_past_the_challenge_reservation_is_refused(world, tmp_path):
     """Per-task quotas bound one task; only the reservation bounds the challenge."""
-    _manifest, snapshot = world
-    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", reservation_calls=2)
+    _manifest, provider = world
+    gateway = Sn22Gateway(provider=provider, challenge_id="c1", reservation_calls=2)
     workdir = tmp_path / "work"
     workdir.mkdir()
     with relay_server.RelayServer(gateway, workdir) as server:
@@ -174,15 +203,14 @@ def test_garbage_on_the_socket_does_not_crash_the_relay(relay):
 
 
 def test_the_relay_never_returns_a_credential_shaped_string(world, tmp_path):
-    """Whatever the corpus contains, secret-shaped text is scrubbed on the way out."""
-    from kata_sn22.manifests import SnapshotDocument, SnapshotManifest
+    """Whatever the PROVIDER returns, secret-shaped text is scrubbed on the way out.
 
-    poisoned = SnapshotManifest(
-        snapshot_id="s1",
-        documents=(SnapshotDocument("doc-poison-1", "Leaked key sk-abcdefghijklmnopqrstuvwx",
-                                    "token sk-abcdefghijklmnopqrstuvwx here", ("emissions",)),),
-        relevant_by_task={})
-    gateway = Sn22Gateway(snapshot=poisoned, challenge_id="c1")
+    The provider is now live rather than a corpus we wrote, which makes this stronger, not weaker:
+    a real search result can contain anything, including a key someone leaked onto a web page.
+    """
+    gateway = Sn22Gateway(provider=_provider([
+        {"link": "https://leak.example/x", "title": "Leaked key sk-abcdefghijklmnopqrstuvwx",
+         "snippet": "token sk-abcdefghijklmnopqrstuvwx here"}]), challenge_id="c1")
     workdir = tmp_path / "work"
     workdir.mkdir()
     with relay_server.RelayServer(gateway, workdir) as server:
@@ -222,7 +250,7 @@ def test_an_agent_can_import_and_use_the_installed_client(relay, tmp_path):
         import sn22_relay
         task = json.loads(sys.stdin.read())
         results = sn22_relay.search(task["query"], limit=3)
-        json.dump({"count": len(results), "ids": [r["doc_id"] for r in results]}, sys.stdout)
+        json.dump({"count": len(results), "links": [r["link"] for r in results]}, sys.stdout)
     """), encoding="utf-8")
 
     env = sandbox.candidate_env(
@@ -234,7 +262,8 @@ def test_an_agent_can_import_and_use_the_installed_client(relay, tmp_path):
         capture_output=True, cwd=str(workdir), env=env, timeout=60, check=False)
     assert completed.returncode == 0, completed.stderr.decode()
     answer = json.loads(completed.stdout)
-    assert answer["count"] > 0 and all(i.startswith("doc-") for i in answer["ids"])
+    assert answer["count"] > 0
+    assert all(link.startswith("https://") for link in answer["links"])
 
 
 def test_the_client_carries_no_provider_credential(tmp_path):
@@ -259,7 +288,7 @@ def test_the_reference_submission_scores_through_the_real_relay(tmp_path):
     submission actually completes. If the relay seam were wrong — wrong transport, missing client,
     unreachable socket — every task would come back as an invalid run and the valid rate would be 0.
     """
-    plugin = Sn22DesearchPlugin()
+    plugin = _verifying_plugin(fixtures.search_provider())
     problems = plugin.sample_problems(seed="relay-e2e", config={"task_count": 4})
 
     class _Context:
@@ -294,7 +323,7 @@ def test_the_reference_submission_passes_the_static_screen():
 
 @pytest.mark.skipif(not REFERENCE_AGENT.is_dir(), reason="competition repository not present")
 def test_the_reference_submission_does_not_ship_the_answers():
-    """Anti-memorization: a bundle carrying sealed document ids has not earned its citations."""
+    """Anti-memorization: a bundle carrying the query pool verbatim has not earned its answers."""
     files = {p.name: p.read_text(encoding="utf-8")
              for p in REFERENCE_AGENT.rglob("*") if p.is_file()}
     reject, review, score = Sn22DesearchPlugin().benchmark_review(files, strict=True)
@@ -348,11 +377,11 @@ def test_the_gateway_reservation_is_derived_from_the_issued_tasks(tmp_path):
 
 
 def test_a_stale_socket_from_a_killed_run_does_not_block_the_next_one(world, tmp_path):
-    _manifest, snapshot = world
+    _manifest, provider = world
     workdir = tmp_path / "work"
     workdir.mkdir()
     (workdir / relay_server.SOCKET_NAME).write_text("left over", encoding="utf-8")
-    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1")
+    gateway = Sn22Gateway(provider=provider, challenge_id="c1")
     with relay_server.RelayServer(gateway, workdir) as server:
         capability = gateway.issue(variant="king", task_id="t000", max_calls=1)
         assert relay_client.search("emissions", capability=capability.token,
@@ -360,10 +389,10 @@ def test_a_stale_socket_from_a_killed_run_does_not_block_the_next_one(world, tmp
 
 
 def test_closing_removes_the_socket(world, tmp_path):
-    _manifest, snapshot = world
+    _manifest, provider = world
     workdir = tmp_path / "work"
     workdir.mkdir()
-    server = relay_server.RelayServer(Sn22Gateway(snapshot=snapshot, challenge_id="c1"), workdir)
+    server = relay_server.RelayServer(Sn22Gateway(provider=provider, challenge_id="c1"), workdir)
     server.start()
     assert os.path.exists(server.socket_path)
     server.close()
@@ -372,9 +401,9 @@ def test_closing_removes_the_socket(world, tmp_path):
 
 def test_the_gateway_quota_read_still_refuses_an_expired_capability(world, tmp_path):
     """A free operation is not an oracle: it authorizes through the same path as a paid one."""
-    _manifest, snapshot = world
+    _manifest, provider = world
     clock = {"t": 0.0}
-    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", capability_ttl_seconds=10,
+    gateway = Sn22Gateway(provider=provider, challenge_id="c1", capability_ttl_seconds=10,
                           clock=lambda: clock["t"])
     capability = gateway.issue(variant="king", task_id="t000", max_calls=3)
     assert gateway.quota(capability.token) == (0, 3)
@@ -445,9 +474,9 @@ def test_parallel_requests_cannot_exceed_the_challenge_reservation(world, tmp_pa
     """
     import threading
 
-    _manifest, snapshot = world
+    _manifest, provider = world
     reservation = 10
-    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", reservation_calls=reservation)
+    gateway = Sn22Gateway(provider=provider, challenge_id="c1", reservation_calls=reservation)
     workdir = tmp_path / "work"
     workdir.mkdir()
 
@@ -487,8 +516,8 @@ def test_parallel_requests_cannot_exceed_a_PER_TASK_quota(world, tmp_path):
     """The same race one level down: a single capability hammered from many threads."""
     import threading
 
-    _manifest, snapshot = world
-    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", reservation_calls=1000)
+    _manifest, provider = world
+    gateway = Sn22Gateway(provider=provider, challenge_id="c1", reservation_calls=1000)
     workdir = tmp_path / "work"
     workdir.mkdir()
 
@@ -516,8 +545,8 @@ def test_parallel_requests_cannot_exceed_a_PER_TASK_quota(world, tmp_path):
 
 def test_retrying_an_exhausted_capability_never_grants_another_call(world, tmp_path):
     """Retry is the other bypass: a refusal must be terminal, not a rate limit to wait out."""
-    _manifest, snapshot = world
-    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", reservation_calls=1000)
+    _manifest, provider = world
+    gateway = Sn22Gateway(provider=provider, challenge_id="c1", reservation_calls=1000)
     workdir = tmp_path / "work"
     workdir.mkdir()
 
@@ -539,8 +568,8 @@ def test_retrying_an_exhausted_capability_never_grants_another_call(world, tmp_p
 def test_a_second_capability_for_the_same_task_does_not_multiply_the_quota(world, tmp_path):
     """Per-task quotas would be meaningless if a contestant could simply be issued another one —
     which is why minting is the LANE's operation and absent from the wire protocol entirely."""
-    _manifest, snapshot = world
-    gateway = Sn22Gateway(snapshot=snapshot, challenge_id="c1", reservation_calls=3)
+    _manifest, provider = world
+    gateway = Sn22Gateway(provider=provider, challenge_id="c1", reservation_calls=3)
     workdir = tmp_path / "work"
     workdir.mkdir()
     with relay_server.RelayServer(gateway, workdir) as server:

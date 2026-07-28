@@ -23,8 +23,8 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from kata_sn22.manifests import SnapshotManifest, UsageManifest, UsageRecord
-from kata_sn22.protocol import MAX_TEXT_CHARS, SearchResult
+from kata_sn22.manifests import UsageManifest, UsageRecord
+from kata_sn22.protocol import MAX_TEXT_CHARS
 
 #: Capability tokens are opaque and fixed-shape. A parser that accepted anything else would be a
 #: place to smuggle structure into a filesystem path or a log line.
@@ -81,13 +81,20 @@ class Capability:
 class Sn22Gateway:
     """The trusted broker between untrusted candidates and paid providers.
 
-    ``snapshot`` is the sealed round corpus. Serving from it rather than from a live provider is
-    what makes "an identical relay request from either contestant resolves to identical content"
-    true by construction — and during calibration it is also what makes the whole thing free.
+    ``provider`` is what actually answers a search: ``provider(query, limit) -> list[dict]``. It is
+    injected rather than built here, and rather than being a sealed corpus, because who pays for
+    search is now a deployment decision — in the TEE backend the miner funds its own calls inside
+    its room, and during calibration a recorded provider makes a run free and repeatable. What the
+    gateway keeps either way is the part that must not vary: the capability check, the billing, the
+    redaction, and the challenge-wide reservation.
+
+    A gateway with no provider REFUSES searches rather than returning nothing. An empty result set
+    and "there is no provider configured" would otherwise be the same answer, and only one of them
+    is a fact about the query.
     """
 
-    snapshot: SnapshotManifest
-    challenge_id: str
+    provider: object = None
+    challenge_id: str = ""
     lane_id: str = "sn22__desearch"
     #: Total calls the gateway will serve this challenge, across every variant. The RESERVATION.
     #: Even a capability with spare quota is refused once this is reached: the reservation is the
@@ -163,7 +170,7 @@ class Sn22Gateway:
 
     # ---- the one operation a candidate may perform -----------------------------------------------
     def search(self, token: str, query: str, *, limit: int = 10) -> list[dict]:
-        """Serve one search from the sealed snapshot and bill it.
+        """Authorize one search, bill it, and return the provider's answer with secrets stripped.
 
         Returns plain dicts, not internal objects: the candidate gets data, never a handle onto
         gateway state it might mutate.
@@ -184,18 +191,23 @@ class Sn22Gateway:
             variant=capability.variant, task_id=capability.task_id,
             provider_calls=1, tokens=250, spend_usd=0.002))
 
-        terms = {w.strip(".,:;!?").lower() for w in query.split() if w.strip(".,:;!?")}
-        scored: list[tuple[int, str, SearchResult]] = []
-        for document in self.snapshot.documents:
-            overlap = len(terms & {t.lower() for t in document.topics})
-            if overlap:
-                scored.append((overlap, document.doc_id, SearchResult(
-                    doc_id=document.doc_id, title=document.title,
-                    snippet=document.text[:200])))
-        # Total order with no ties, so the sequence cannot depend on dict iteration or on who asked.
-        scored.sort(key=lambda row: (-row[0], row[1]))
-        return [{"doc_id": r.doc_id, "title": redact(r.title), "snippet": redact(r.snippet)}
-                for _o, _d, r in scored[:limit]]
+        if self.provider is None:
+            raise GatewayDenied("no search provider is configured")
+        try:
+            results = self.provider(query, limit) or []
+        except GatewayDenied:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a provider fault must not leak its internals
+            raise GatewayDenied("the search provider could not answer") from exc
+
+        # Redacted on the way OUT, every field, every result. The provider's response is the one
+        # place a credential could travel back to the candidate, and redacting only known fields
+        # would be a denylist -- the thing this file avoids everywhere else.
+        return [
+            {str(key): redact(value) if isinstance(value, str) else value
+             for key, value in (item or {}).items()}
+            for item in results[:limit] if isinstance(item, dict)
+        ]
 
     def quota(self, token: str) -> tuple[int, int]:
         """``(used, max_calls)`` for a live capability. Free, and it consumes nothing.

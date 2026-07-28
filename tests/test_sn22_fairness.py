@@ -23,20 +23,33 @@ from kata_sn22.protocol import ErrorClass, parse_task_output
 from kata_sn22.scoring import TaskAttempt, beats_king, compare_signals, score_attempts
 
 
+def _verifying_plugin():
+    """A plugin wired to the recorded verification world. Its scoring path is production's; only
+    where the pages, verdicts and re-scrapes come from differs."""
+    from kata_sn22.fetch import RecordedPages
+
+    tweets = fixtures.recorded_tweets()
+    return Sn22DesearchPlugin(
+        search_provider=fixtures.search_provider(),
+        page_transport=RecordedPages(records=fixtures.recorded_pages()),
+        judge_client=fixtures.scripted_judge(),
+        tweet_scraper=lambda ids: {tid: tweets[tid] for tid in ids if tid in tweets})
+
+
 @pytest.fixture
 def plugin():
-    return Sn22DesearchPlugin()
+    return _verifying_plugin()
 
 
 @pytest.fixture
 def world():
     manifest = fixtures.calibration_manifest(count=4)
-    return manifest, fixtures.calibration_snapshot(manifest)
+    return manifest, _verifying_plugin()
 
 
-def _attempts(kind, tasks, snapshot, *, seconds=2.0):
+def _attempts(kind, tasks, plugin, *, seconds=2.0):
     attempts = []
-    for task, raw in zip(tasks, fixtures.reference_responses(kind, tasks, snapshot), strict=True):
+    for task, raw in zip(tasks, fixtures.reference_responses(kind, tasks), strict=True):
         try:
             attempts.append(TaskAttempt(task=task, output=parse_task_output(raw, task=task),
                                         observed_seconds=seconds))
@@ -151,21 +164,21 @@ def test_an_executed_self_match_ties_and_does_not_promote(plugin, tmp_path, worl
     assert not plugin.beats_king(king, challenger)
 
 
-def _self_match(tasks, snapshot, *, fast_seconds, slow_seconds):
-    fast = score_attempts(_attempts("strong", tasks, snapshot, seconds=fast_seconds),
-                          snapshot=snapshot, usage=_usage(tasks, "challenger"),
+def _self_match(tasks, plugin, *, fast_seconds, slow_seconds):
+    fast = score_attempts(_attempts("strong", tasks, plugin, seconds=fast_seconds),
+                          usage=_usage(tasks, "challenger"),
                           variant="challenger")
-    slow = score_attempts(_attempts("strong", tasks, snapshot, seconds=slow_seconds),
-                          snapshot=snapshot, usage=_usage(tasks, "king"), variant="king")
+    slow = score_attempts(_attempts("strong", tasks, plugin, seconds=slow_seconds),
+                          usage=_usage(tasks, "king"), variant="king")
     return fast, slow
 
 
 def test_a_self_match_tie_survives_ordinary_latency_jitter(world):
     """Wall clock WILL differ between two runs of one submission. The margin absorbs the ordinary
     case — that is what the margin is for, and a zero latency margin would promote every one."""
-    _manifest, snapshot = world
+    _manifest, plugin = world
     tasks = fixtures.tasks_for(_manifest)
-    fast, slow = _self_match(tasks, snapshot, fast_seconds=1.0, slow_seconds=1.4)
+    fast, slow = _self_match(tasks, plugin, fast_seconds=1.0, slow_seconds=1.4)
     assert fast.sn22_latency_seconds < slow.sn22_latency_seconds     # they really did differ
     assert not beats_king(fast, slow, margins=PROMOTION_MARGINS)     # ...and it decides nothing
     # Without the margin it WOULD have promoted, which is the false-promotion mode §5.5 bounds.
@@ -180,12 +193,12 @@ def test_the_latency_margin_is_a_TOTAL_and_therefore_scales_with_task_count(worl
     margin and the task count are therefore not independent knobs, and calibrating one without the
     other produces a lane that promotes on noise at the size it actually runs.
     """
-    _manifest, snapshot = world
+    _manifest, plugin = world
     tasks = fixtures.tasks_for(_manifest)
     margin = PROMOTION_MARGINS["sn22_latency_seconds"]
 
     # Per-task jitter small enough that 4 tasks stay inside the margin...
-    inside, slower = _self_match(tasks, snapshot, fast_seconds=1.0, slow_seconds=1.4)
+    inside, slower = _self_match(tasks, plugin, fast_seconds=1.0, slow_seconds=1.4)
     assert slower.sn22_latency_seconds - inside.sn22_latency_seconds < margin
     assert not beats_king(inside, slower, margins=PROMOTION_MARGINS)
 
@@ -193,7 +206,7 @@ def test_the_latency_margin_is_a_TOTAL_and_therefore_scales_with_task_count(worl
     per_task = 0.4
     tasks_needed = int(margin / per_task) + 1
     assert tasks_needed * per_task > margin
-    outside, much_slower = _self_match(tasks, snapshot, fast_seconds=1.0,
+    outside, much_slower = _self_match(tasks, plugin, fast_seconds=1.0,
                                        slow_seconds=1.0 + per_task * tasks_needed / len(tasks))
     assert much_slower.sn22_latency_seconds - outside.sn22_latency_seconds > margin
     assert beats_king(outside, much_slower, margins=PROMOTION_MARGINS)
@@ -204,19 +217,20 @@ def test_the_latency_margin_is_a_TOTAL_and_therefore_scales_with_task_count(worl
 def test_the_scorer_cannot_tell_which_side_it_is_scoring(world):
     """Blinding, as a property of the code rather than a policy.
 
-    The quality signals are computed from the sealed snapshot and the submitted output alone. The
+    The quality signals are computed from what the VALIDATOR verified and the submitted output
+    alone. The
     variant label reaches ``score_attempts`` only to look up that side's billing, so swapping the
     labels must move the cost figure and NOTHING else.
     """
-    _manifest, snapshot = world
+    _manifest, plugin = world
     tasks = fixtures.tasks_for(_manifest)
-    attempts = _attempts("medium", tasks, snapshot)
+    attempts = _attempts("medium", tasks, plugin)
     usage = UsageManifest(challenge_id="c", records=(
         *_usage(tasks, "king", calls=1).records,
         *_usage(tasks, "challenger", calls=5).records))
 
-    as_king = score_attempts(attempts, snapshot=snapshot, usage=usage, variant="king")
-    as_challenger = score_attempts(attempts, snapshot=snapshot, usage=usage, variant="challenger")
+    as_king = score_attempts(attempts, usage=usage, variant="king")
+    as_challenger = score_attempts(attempts, usage=usage, variant="challenger")
 
     for name in ("sn22_valid_query_rate", "sn22_weighted_quality", "sn22_citation_precision",
                  "sn22_coverage", "sn22_invalid_runs", "sn22_latency_seconds"):
@@ -239,13 +253,13 @@ def test_the_quality_path_never_reads_the_variant(world):
 def test_an_incumbent_gets_no_scoring_advantage_from_being_the_incumbent(world):
     """A weak king and a weak challenger score identically. Any asymmetry would be a thumb on the
     scale, invisible in every published signal."""
-    _manifest, snapshot = world
+    _manifest, plugin = world
     tasks = fixtures.tasks_for(_manifest)
-    attempts = _attempts("weak", tasks, snapshot)
+    attempts = _attempts("weak", tasks, plugin)
     usage = UsageManifest(challenge_id="c", records=(
         *_usage(tasks, "king").records, *_usage(tasks, "challenger").records))
-    king = score_attempts(attempts, snapshot=snapshot, usage=usage, variant="king")
-    challenger = score_attempts(attempts, snapshot=snapshot, usage=usage, variant="challenger")
+    king = score_attempts(attempts, usage=usage, variant="king")
+    challenger = score_attempts(attempts, usage=usage, variant="challenger")
     assert compare_signals(king, challenger) == 0
 
 
@@ -253,14 +267,14 @@ def test_an_incumbent_gets_no_scoring_advantage_from_being_the_incumbent(world):
 
 def test_a_shared_infrastructure_fault_penalises_neither_side(world):
     """§5.4: infrastructure failures shared by both sides do not become candidate zeros."""
-    _manifest, snapshot = world
+    _manifest, plugin = world
     tasks = fixtures.tasks_for(_manifest)
-    clean = _attempts("strong", tasks, snapshot)
+    clean = _attempts("strong", tasks, plugin)
     faulted = [TaskAttempt(task=clean[0].task, error=ErrorClass.PROVIDER_UNAVAILABLE,
                            observed_seconds=1.0), *clean[1:]]
 
-    whole = score_attempts(clean, snapshot=snapshot, usage=_usage(tasks), variant="king")
-    excluded = score_attempts(faulted, snapshot=snapshot, usage=_usage(tasks), variant="king")
+    whole = score_attempts(clean, usage=_usage(tasks), variant="king")
+    excluded = score_attempts(faulted, usage=_usage(tasks), variant="king")
     # The faulted task is EXCLUDED, not scored zero: validity and quality are unharmed.
     assert excluded.sn22_valid_query_rate == whole.sn22_valid_query_rate == 1.0
     assert excluded.sn22_invalid_runs == 0
@@ -269,14 +283,14 @@ def test_a_shared_infrastructure_fault_penalises_neither_side(world):
 
 def test_a_candidate_caused_failure_penalises_only_that_candidate(world):
     """...and the mirror image: a crash IS the candidate's, and must count."""
-    _manifest, snapshot = world
+    _manifest, plugin = world
     tasks = fixtures.tasks_for(_manifest)
-    clean = _attempts("strong", tasks, snapshot)
+    clean = _attempts("strong", tasks, plugin)
     crashed = [TaskAttempt(task=clean[0].task, error=ErrorClass.CRASHED, observed_seconds=1.0),
                *clean[1:]]
 
-    king = score_attempts(clean, snapshot=snapshot, usage=_usage(tasks), variant="king")
-    challenger = score_attempts(crashed, snapshot=snapshot, usage=_usage(tasks), variant="king")
+    king = score_attempts(clean, usage=_usage(tasks), variant="king")
+    challenger = score_attempts(crashed, usage=_usage(tasks), variant="king")
     assert challenger.sn22_invalid_runs == 1
     assert challenger.sn22_valid_query_rate < king.sn22_valid_query_rate
     assert compare_signals(challenger, king) == -1
