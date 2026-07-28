@@ -108,7 +108,7 @@ def test_quota_is_free_and_readable_even_when_exhausted(relay):
     server, gateway = relay
     capability = gateway.issue(variant="king", task_id="t000", max_calls=1)
     assert relay_client.quota(capability.token, endpoint=server.endpoint) == {
-        "used": 0, "max_calls": 1, "remaining": 1}
+        "used": 0, "max_calls": 1, "remaining": 1, "metered": True}
     relay_client.search("emissions", capability=capability.token, endpoint=server.endpoint)
     # Exhausted, and STILL readable: refusing to report an exhausted quota would withhold the one
     # answer the agent needs at exactly the moment it needs it.
@@ -588,3 +588,122 @@ def test_a_second_capability_for_the_same_task_does_not_multiply_the_quota(world
                     pass
     # Four calls were attempted across two capabilities; the CHALLENGE reservation still bound them.
     assert served == 3
+
+
+# ---- one API, two transports -------------------------------------------------------------------
+#
+# The agent calls `sn22_relay.search(...)` and never knows which it got. That is not tidiness: a
+# number measured in the sandbox only predicts a number measured in the room if the SAME agent.py
+# runs in both, unchanged. Before this the room provided no `sn22_relay` at all, so every submission
+# would have died on `import sn22_relay` in its first real round.
+
+def test_the_transport_is_chosen_by_the_environment_not_by_the_agent(monkeypatch):
+    """Which one is in use is a FACT about where the agent is running, established by whichever
+    component configured it — not a flag a submission could set to change its own economics."""
+    monkeypatch.delenv(relay_client.ENDPOINT_ENV, raising=False)
+    monkeypatch.delenv(relay_client.GATEWAY_ENV, raising=False)
+    assert relay_client.in_sealed_room() is False
+
+    monkeypatch.setenv(relay_client.GATEWAY_ENV, "http://gateway.internal/j/route")
+    assert relay_client.in_sealed_room() is True
+
+
+def test_a_workdir_socket_wins_over_a_gateway_url(monkeypatch):
+    """Only the lane can put a socket in the run directory, so its presence is the stronger fact.
+    A submission that somehow set the gateway variable cannot switch itself onto the miner-funded
+    path to escape the lane's metering."""
+    monkeypatch.setenv(relay_client.ENDPOINT_ENV, "sn22-relay+unix:///tmp/x.sock")
+    monkeypatch.setenv(relay_client.GATEWAY_ENV, "http://gateway.internal/j/route")
+    assert relay_client.in_sealed_room() is False
+
+
+def test_the_room_transport_sends_the_miners_own_key(monkeypatch):
+    """The room's gateway answers 401 without it, and an agent cannot tell that apart from a bad
+    query — so the key travelling with the request is what makes a refusal mean something."""
+    sent = {}
+
+    class _Response:
+        def read(self, _n):
+            return json.dumps({"ok": True, "results": [{"link": "https://a.test"}]}).encode()
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+
+    def _urlopen(request, timeout=None):
+        sent["url"] = request.full_url
+        sent["headers"] = {k.lower(): v for k, v in request.headers.items()}
+        sent["body"] = json.loads(request.data.decode())
+        return _Response()
+
+    monkeypatch.delenv(relay_client.ENDPOINT_ENV, raising=False)
+    monkeypatch.setenv(relay_client.GATEWAY_ENV, "http://gateway.internal/j/route")
+    monkeypatch.setenv(relay_client.GATEWAY_KEY_ENV, "sk-miner-key")
+    import urllib.request as _urllib
+    monkeypatch.setattr(_urllib, "urlopen", _urlopen)
+
+    results = relay_client.search("emissions", limit=3)
+
+    assert results == [{"link": "https://a.test"}]
+    assert sent["headers"]["x-inference-api-key"] == "sk-miner-key"
+    assert sent["body"] == {"op": "search", "capability": "", "query": "emissions", "limit": 3}
+
+
+def test_a_room_with_no_sealed_credential_refuses_rather_than_calling(monkeypatch):
+    """A submission that shipped no sealed key would otherwise get an opaque 401. Saying so before
+    the call is the difference between "you did not seal a credential" and "the room is broken"."""
+    monkeypatch.delenv(relay_client.ENDPOINT_ENV, raising=False)
+    monkeypatch.setenv(relay_client.GATEWAY_ENV, "http://gateway.internal/j/route")
+    monkeypatch.delenv(relay_client.GATEWAY_KEY_ENV, raising=False)
+
+    with pytest.raises(relay_client.RelayError, match="no miner inference credential"):
+        relay_client.search("emissions")
+
+
+def test_the_room_transport_collapses_every_refusal(monkeypatch):
+    """Same rule as the unix transport: an agent that could tell 401 from 403 from 502 could map the
+    room's state one request at a time."""
+    import urllib.error
+    import urllib.request as _urllib
+
+    monkeypatch.delenv(relay_client.ENDPOINT_ENV, raising=False)
+    monkeypatch.setenv(relay_client.GATEWAY_ENV, "http://gateway.internal/j/route")
+    monkeypatch.setenv(relay_client.GATEWAY_KEY_ENV, "sk-miner-key")
+
+    for code in (401, 403, 429, 502):
+        def _raise(_request, timeout=None, _code=code):
+            raise urllib.error.HTTPError("http://gateway.internal", _code, "no", {}, None)
+
+        monkeypatch.setattr(_urllib, "urlopen", _raise)
+        with pytest.raises(relay_client.RelayError, match="refused the request"):
+            relay_client.search("emissions")
+
+
+def test_quota_in_the_room_says_it_is_unmetered_rather_than_inventing_a_number(monkeypatch):
+    """The miner funds its own calls, so the only limit is a budget the room cannot see. An agent
+    pacing itself against a made-up number would spend its real budget on the wrong things."""
+    monkeypatch.delenv(relay_client.ENDPOINT_ENV, raising=False)
+    monkeypatch.setenv(relay_client.GATEWAY_ENV, "http://gateway.internal/j/route")
+
+    assert relay_client.quota()["metered"] is False
+
+
+def test_the_client_imports_no_banned_module_at_module_scope():
+    """The static screen rejects a submission importing `urllib.request`, and this file is copied
+    INTO a bundle. Keeping that import inside the one function that needs it means the sandbox path
+    never loads it at all.
+
+    Asked with the AST rather than by searching the text, because the module's own docstring NAMES
+    the banned modules while explaining why they are banned — a substring check would fail on the
+    explanation and pass on a real import buried in a comment."""
+    import ast
+
+    tree = ast.parse(Path(relay_client.__file__).read_text(encoding="utf-8"))
+    top_level = {
+        alias.name.split(".")[0]
+        for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in getattr(node, "names", [])
+    }
+    top_level |= {node.module.split(".")[0] for node in tree.body
+                  if isinstance(node, ast.ImportFrom) and node.module}
+    assert not (top_level & {"urllib", "requests", "httpx"}), sorted(top_level)
+    # ...and it IS imported somewhere, or the room transport could not work at all.
+    assert "import urllib.request" in Path(relay_client.__file__).read_text(encoding="utf-8")

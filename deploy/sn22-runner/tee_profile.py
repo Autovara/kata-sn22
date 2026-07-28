@@ -84,11 +84,18 @@ class Sn22TeeProfile:
 
         ensure_inference_network_once()
         start_inference_gateway_once()
-        gateway = inference_gateway_url(job_id=job_id, credential=credential)
+        # No deploy-time key exists. An agent whose submission shipped no sealed credential gets
+        # empty inference settings, never an operator-funded fallback -- the same rule SN60 runs on.
+        # The route is derived from the credential's PROVIDER, which is what stops an untrusted
+        # agent redirecting the miner's key at a destination of its own choosing.
+        gateway = (inference_gateway_url(job_id, credential.provider)
+                   if credential is not None else "")
+        api_key = credential.api_key if credential is not None else ""
 
         with tempfile.TemporaryDirectory() as workdir:
             answer, stderr, timed_out = self._run_agent(
-                bundle_root=bundle_root, workdir=workdir, task=task, gateway=gateway)
+                bundle_root=bundle_root, workdir=workdir, task=task,
+                gateway=gateway, api_key=api_key)
 
         report = {
             "schema_version": 1,
@@ -124,7 +131,7 @@ class Sn22TeeProfile:
         return task
 
     def _run_agent(self, *, bundle_root: str, workdir: str, task: dict,
-                   gateway: str) -> tuple[str, str, bool]:
+                   gateway: str, api_key: str) -> tuple[str, str, bool]:
         """Start the untrusted agent container and read its one JSON answer off stdout.
 
         Everything restrictive here is deliberate and mirrors SN60's profile: no network but the
@@ -145,6 +152,10 @@ class Sn22TeeProfile:
             "--mount", f"type=bind,source={workdir},target=/work",
             "--workdir", "/work",
             "--env", f"SN22_INFERENCE_GATEWAY={gateway}",
+            # The miner's OWN key, decrypted in-room. Without it the gateway answers 401 and the
+            # agent has no way to tell that apart from a bad query -- so it travels with the URL,
+            # never separately.
+            "--env", f"SN22_INFERENCE_API_KEY={api_key}",
             "--env", "SN22_PROTOCOL_VERSION=1",
             "--env", f"SN22_TASK_ID={task.get('task_id')}",
             image,
