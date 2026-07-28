@@ -21,16 +21,24 @@ That inversion buys three things a "call this HTTP endpoint" contract does not:
 ===============  ==============================  ==============================================
                  Sandbox (calibration)           Sealed room (production)
 ===============  ==============================  ==============================================
-Reached by       AF_UNIX socket in the workdir   HTTP to the in-room inference gateway
-Selected by      ``SN22_RELAY_ENDPOINT``         ``SN22_INFERENCE_GATEWAY``
-Who pays         the LANE, metered by capability the MINER, with its own sealed key
-Quota            enforced per capability         none — the miner's own budget is the limit
+Reached by       AF_UNIX socket in the workdir   HTTP to the in-room trusted broker
+Selected by      ``SN22_RELAY_ENDPOINT``         ``SN22_BROKER_URL``
+Who pays         the LANE, metered by capability the MINER, from keys it never sees
+Authority        a capability                    a capability
+Quota            enforced per capability         enforced per capability, per operation
 ===============  ==============================  ==============================================
 
 Having both behind one function is not tidiness. It is what makes calibration mean anything: a
 number measured in the sandbox only predicts a number measured in the room if the SAME ``agent.py``
 runs in both, unchanged. Before this, the room provided no ``sn22_relay`` at all and every
 submission would have died on ``import sn22_relay`` in its first real round.
+
+**The agent never holds a provider key.** An earlier version of this module read the miner's
+decrypted key out of ``SN22_INFERENCE_API_KEY`` and sent it upstream itself. That put a real
+credential in the environment of code written by a stranger, where ``os.environ``,
+``/proc/self/environ``, a crash dump or a stray ``print`` would have been enough to take it. The key
+now stays in the trusted runner and the agent presents a capability instead: a token that is worth
+its remaining calls and nothing else, and that is dead the moment the job ends.
 """
 from __future__ import annotations
 
@@ -51,10 +59,18 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 ENDPOINT_ENV = "SN22_RELAY_ENDPOINT"
 CAPABILITY_ENV = "SN22_RELAY_CAPABILITY"
 
-#: The sealed room's equivalents. The gateway URL is signed and provider-bound (an agent cannot
-#: point it elsewhere); the key is the MINER's own, decrypted in-room and never the lane's.
-GATEWAY_ENV = "SN22_INFERENCE_GATEWAY"
-GATEWAY_KEY_ENV = "SN22_INFERENCE_API_KEY"
+#: The sealed room's equivalents. The broker URL points at the in-room trusted broker, which holds
+#: the miner's decrypted keys and never hands one out. There is deliberately NO key variable here:
+#: see the module docstring.
+BROKER_URL_ENV = "SN22_BROKER_URL"
+BROKER_CAPABILITY_ENV = "SN22_BROKER_CAPABILITY"
+CAPABILITY_HEADER = "x-kata-capability"
+
+#: The broker operations this client knows how to ask for. Names, not URLs: the agent cannot name a
+#: host, and an operation it has not been granted is refused by the broker rather than by this file.
+OP_WEB_SEARCH = "web-search"
+OP_X_SEARCH = "x-search"
+OP_FINAL_SUMMARY = "final-summary"
 #: The scheme the endpoint carries. A path, not a URL: there is nothing to resolve and nothing to
 #: route, which is the point.
 ENDPOINT_SCHEME = "sn22-relay+unix://"
@@ -86,13 +102,27 @@ def in_sealed_room() -> bool:
     presence of one is the fact rather than a claim about it. The unix socket wins if somehow both
     are set — a socket in the workdir can only have been put there by the lane.
     """
-    return not endpoint_path() and bool(os.environ.get(GATEWAY_ENV, "").strip())
+    return not endpoint_path() and bool(os.environ.get(BROKER_URL_ENV, "").strip())
+
+
+#: Maps the sandbox's ``op`` to the room's broker operation. The sandbox relay has one search; the
+#: room's broker has a separate operation per provider, because it -- not the agent -- decides which
+#: credential a call spends.
+_SANDBOX_OP_TO_BROKER_OP = {"search": OP_WEB_SEARCH}
 
 
 def _request(payload: dict, *, endpoint: str | None = None,
              timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
     if endpoint is None and in_sealed_room():
-        return _room_request(payload, timeout=timeout)
+        operation = _SANDBOX_OP_TO_BROKER_OP.get(str(payload.get("op") or ""), "")
+        if not operation:
+            raise RelayError("relay refused the request")
+        body = {key: value for key, value in payload.items() if key not in {"op", "capability"}}
+        if "limit" in body:
+            # The sandbox calls it `limit`; the broker uses upstream's own field name, and enforces
+            # upstream's own range on it.
+            body["count"] = body.pop("limit")
+        return _room_request(operation, body, timeout=timeout)
     path = endpoint_path(endpoint)
     if not path:
         raise RelayError("no relay endpoint was provided")
@@ -141,8 +171,25 @@ def _request(payload: dict, *, endpoint: str | None = None,
     return document
 
 
-def _room_request(payload: dict, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
-    """The same request, over the room's signed gateway route, paid for by the miner.
+def _broker_url(operation: str) -> str:
+    """The broker URL for one named operation.
+
+    Built from the base the room supplies plus a validated operation NAME. The agent never supplies
+    a URL, and an operation name that is not one of the three below cannot be assembled here at all
+    — so the "pick your own host" attack has nowhere to enter, quite apart from the broker refusing
+    it on the other end.
+    """
+    base = os.environ.get(BROKER_URL_ENV, "").strip().rstrip("/")
+    if not base:
+        raise RelayError("no relay endpoint was provided")
+    if operation not in {OP_WEB_SEARCH, OP_X_SEARCH, OP_FINAL_SUMMARY}:
+        raise RelayError("relay refused the request")
+    return f"{base}/v1/op/{operation}"
+
+
+def _room_request(operation: str, payload: dict, *,
+                  timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
+    """One named operation, performed by the in-room broker with the miner's key.
 
     ``urllib`` is imported HERE rather than at module scope on purpose. The static screen rejects a
     submission that imports it, and this module is read by that screen too when it is copied into a
@@ -152,22 +199,19 @@ def _room_request(payload: dict, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) ->
     import urllib.error
     import urllib.request
 
-    url = os.environ.get(GATEWAY_ENV, "").strip()
-    if not url:
-        raise RelayError("no relay endpoint was provided")
-    api_key = os.environ.get(GATEWAY_KEY_ENV, "").strip()
-    if not api_key:
-        # The room decrypts the miner's credential and passes it in. Missing means the submission
-        # shipped no sealed key, or the room did not plumb it -- either way the gateway would answer
-        # 401 and the agent would have no idea why.
-        raise RelayError("no miner inference credential is available in this room")
+    url = _broker_url(operation)
+    capability = os.environ.get(BROKER_CAPABILITY_ENV, "").strip()
+    if not capability:
+        # The room mints one per job and puts it here. Missing means the room did not plumb it, and
+        # every call would come back refused with no way for the agent to tell why.
+        raise RelayError("no broker capability is available in this room")
 
     body = json.dumps(payload, separators=(",", ":")).encode(ENCODING)
     if len(body) > MAX_REQUEST_BYTES:
         raise RelayError("request exceeds the relay size limit")
     request = urllib.request.Request(
         url, data=body, method="POST",
-        headers={"content-type": "application/json", "x-inference-api-key": api_key})
+        headers={"content-type": "application/json", CAPABILITY_HEADER: capability})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
@@ -218,15 +262,82 @@ def quota(capability: str | None = None, *, endpoint: str | None = None,
     """
     token = capability if capability is not None else os.environ.get(CAPABILITY_ENV, "")
     if endpoint is None and in_sealed_room():
-        # There is no lane-imposed quota in the room: the miner funds its own calls with its own
-        # key, so the only limit is its own budget, which the room cannot see. Reporting a made-up
-        # number would be worse than saying so -- an agent pacing itself against a fiction spends
-        # its real budget on the wrong things.
-        return {"used": 0, "max_calls": 0, "remaining": 0, "metered": False}
+        return _room_quota(timeout=timeout)
     document = _request({"op": "quota", "capability": token}, endpoint=endpoint, timeout=timeout)
     return {"used": int(document.get("used", 0)), "max_calls": int(document.get("max_calls", 0)),
             "remaining": int(document.get("remaining", 0)), "metered": True}
 
 
-__all__ = ["CAPABILITY_ENV", "ENDPOINT_ENV", "ENDPOINT_SCHEME", "MAX_REQUEST_BYTES",
-           "MAX_RESPONSE_BYTES", "RelayError", "endpoint_path", "quota", "search"]
+def _room_quota(*, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict:
+    """The broker's per-operation quota for this capability.
+
+    This used to return ``metered: False`` with three zeroes, because the old gateway imposed no
+    limit — the miner's own budget was the only ceiling. That is no longer true and reporting it
+    would be a lie an agent paces itself against: the broker enforces an equal per-operation quota
+    for every contestant, so the numbers are real and both sides get the same ones.
+    """
+    import urllib.error
+    import urllib.request
+
+    base = os.environ.get(BROKER_URL_ENV, "").strip().rstrip("/")
+    capability = os.environ.get(BROKER_CAPABILITY_ENV, "").strip()
+    if not base or not capability:
+        raise RelayError("no relay endpoint was provided")
+    request = urllib.request.Request(
+        f"{base}/v1/quota", method="GET", headers={CAPABILITY_HEADER: capability})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        raise RelayError(f"relay refused the request ({exc.code})") from exc
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise RelayError(f"relay is unreachable: {exc}") from exc
+    try:
+        document = json.loads(raw.decode(ENCODING))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RelayError(f"relay answered with something that is not JSON: {exc}") from exc
+    operations = document.get("operations") if isinstance(document, dict) else None
+    operations = operations if isinstance(operations, dict) else {}
+    search_quota = operations.get(OP_WEB_SEARCH) or {}
+    return {
+        # The flat keys keep one shape across both transports, so an agent written against the
+        # sandbox does not have to branch. `operations` carries the detail the room can offer.
+        "used": int(search_quota.get("used", 0)),
+        "max_calls": int(search_quota.get("max_calls", 0)),
+        "remaining": int(search_quota.get("remaining", 0)),
+        "metered": True,
+        "operations": operations,
+    }
+
+
+def x_search(query: str, *, count: int = 10, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> list:
+    """Search X/Twitter through the broker. Room only — the sandbox has no X provider.
+
+    The actor is pinned by the broker, not chosen here: a different actor returns a different tweet
+    shape, and the evaluator's field-by-field comparison would start failing honest contestants.
+    """
+    if not in_sealed_room():
+        raise RelayError("x_search is only available in the sealed room")
+    document = _room_request(OP_X_SEARCH, {"query": query, "count": int(count)}, timeout=timeout)
+    results = document.get("results")
+    return [item for item in (results or []) if isinstance(item, dict) and item]
+
+
+def final_summary(messages: list, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> str:
+    """Write the agent's final summary through the broker, on the fixed model.
+
+    The messages are the agent's -- it is writing its own answer. The model is not: every contestant
+    summarises with the same one, or the comparison measures budget rather than skill.
+    """
+    if not in_sealed_room():
+        raise RelayError("final_summary is only available in the sealed room")
+    document = _room_request(OP_FINAL_SUMMARY, {"messages": list(messages or [])}, timeout=timeout)
+    content = document.get("content")
+    if not isinstance(content, str):
+        raise RelayError("relay answered without a summary")
+    return content
+
+
+__all__ = ["BROKER_CAPABILITY_ENV", "BROKER_URL_ENV", "CAPABILITY_ENV", "ENDPOINT_ENV",
+           "ENDPOINT_SCHEME", "MAX_REQUEST_BYTES", "MAX_RESPONSE_BYTES", "RelayError",
+           "endpoint_path", "final_summary", "quota", "search", "x_search"]

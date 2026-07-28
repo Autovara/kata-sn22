@@ -56,19 +56,27 @@ def profile(monkeypatch, tmp_path):
         stderr = b""
 
     monkeypatch.setattr(tee_profile, "docker", lambda: "docker")
-    monkeypatch.setattr(tee_profile, "ensure_inference_network_once", lambda: None)
-    monkeypatch.setattr(tee_profile, "start_inference_gateway_once", lambda: None)
+    monkeypatch.setattr(tee_profile, "ensure_broker_network_once", lambda _broker: None)
     monkeypatch.setattr(tee_profile.subprocess, "run",
                         lambda argv, **kw: calls.append(list(argv)) or _Completed())
     return tee_profile.Sn22TeeProfile(), calls
 
 
+#: The one string that must never appear anywhere the agent can reach.
+MINER_KEY = "sk-miner-secret-key-0123456789"
+
+
 @pytest.fixture
 def credential():
-    from room.profile import MinerInferenceCredential
+    from room.profile import MinerCredentialSet
 
-    return MinerInferenceCredential(provider="openai", api_key="sk-miner-key",
-                                    bundle_binding="b" * 64)
+    from kata_sn22.credentials_v2 import CREDENTIAL_PROFILE, REQUIRED_PROVIDERS
+
+    return MinerCredentialSet(
+        credentials={name: f"{MINER_KEY}-{name}" for name in REQUIRED_PROVIDERS},
+        bundle_binding="b" * 64,
+        credential_profile=CREDENTIAL_PROFILE,
+    )
 
 
 #: Job ids are 16..64 lowercase hex — the room validates that before signing a gateway route, so a
@@ -106,9 +114,35 @@ def test_a_real_task_reaches_the_agent_at_all(profile, credential, tmp_path):
     assert result.report["task_id"] == "t000"
 
 
-def test_the_miners_own_key_travels_to_the_agent(profile, credential, tmp_path):
-    """Defect 2. Without it the in-room gateway answers 401 for every call, and the agent cannot
-    tell that apart from a bad query."""
+def test_no_provider_key_reaches_the_agent_container(profile, credential, tmp_path):
+    """The Phase C exit gate, at the exact boundary where it used to fail.
+
+    This test previously asserted the OPPOSITE -- that ``SN22_INFERENCE_API_KEY`` carried the
+    miner's decrypted key into the container -- and it passed, because that is what the profile did.
+    That put a real credential in the environment of code written by a stranger, where
+    ``os.environ``, ``/proc/self/environ``, a crash dump or a stray ``print`` would have sufficed.
+
+    The whole docker argv is searched, not just the ``--env`` pairs: a key smuggled into a mount
+    path, a label or an image reference would be just as readable from inside.
+    """
+    plugin, calls = profile
+    (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
+
+    plugin.run(project_key=TASK, credential=credential, bundle_root=str(tmp_path),
+               job_id=JOB_ID, bundle_sha256="c" * 64)
+
+    argv = " ".join(calls[0])
+    assert MINER_KEY not in argv
+    for provider, key in credential.credentials.items():
+        assert key not in argv, f"the {provider} key reached the agent container"
+    assert "SN22_INFERENCE_API_KEY" not in argv
+
+
+def test_the_agent_gets_a_capability_and_a_broker_url(profile, credential, tmp_path):
+    """What replaces the key. A capability is worth its remaining calls and nothing else, and it is
+    dead the moment the job closes."""
+    from room.broker import CAPABILITY_RE
+
     plugin, calls = profile
     (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
 
@@ -116,22 +150,39 @@ def test_the_miners_own_key_travels_to_the_agent(profile, credential, tmp_path):
                job_id=JOB_ID, bundle_sha256="c" * 64)
 
     env = _env_of(calls[0])
-    assert env["SN22_INFERENCE_API_KEY"] == "sk-miner-key"
-    assert env["SN22_INFERENCE_GATEWAY"].startswith("http://")
+    assert env["SN22_BROKER_URL"].startswith("http://")
+    assert CAPABILITY_RE.fullmatch(env["SN22_BROKER_CAPABILITY"])
 
 
-def test_the_gateway_route_is_bound_to_the_credentials_provider(profile, credential, tmp_path):
-    """The route is derived from the PROVIDER, which is what stops an untrusted agent pointing the
-    miner's key at a destination of its own choosing."""
+def test_the_capability_is_dead_once_the_job_ends(profile, credential, tmp_path):
+    """A capability that outlived its job would let a slow agent keep spending the miner's money
+    after it had already been scored."""
+    from room.broker import BrokerDenied
+
     plugin, calls = profile
     (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
 
     plugin.run(project_key=TASK, credential=credential, bundle_root=str(tmp_path),
                job_id=JOB_ID, bundle_sha256="c" * 64)
 
-    from room.inference_network import inference_gateway_url
+    token = _env_of(calls[0])["SN22_BROKER_CAPABILITY"]
+    with pytest.raises(BrokerDenied):
+        plugin.broker.dispatch(token, "web-search", {"query": "anything"}, over_http=True)
 
-    assert _env_of(calls[0])["SN22_INFERENCE_GATEWAY"] == inference_gateway_url(JOB_ID, "openai")
+
+def test_the_broker_records_every_provider_call_in_the_attested_provenance(
+    profile, credential, tmp_path
+):
+    """The broker's own record, not the agent's self-report -- and it rides in the provenance, so
+    it is bound into the quote."""
+    plugin, _calls = profile
+    (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
+
+    result = plugin.run(project_key=TASK, credential=credential, bundle_root=str(tmp_path),
+                        job_id=JOB_ID, bundle_sha256="c" * 64)
+
+    assert "provider_calls" in result.provenance
+    assert MINER_KEY not in json.dumps(result.provenance)
 
 
 def test_an_agent_can_import_the_relay_module_the_image_ships(profile):

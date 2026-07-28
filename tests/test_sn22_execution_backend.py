@@ -188,6 +188,10 @@ def test_the_room_profile_refuses_a_mutable_image_tag():
     room_stub = mock.MagicMock()
     with mock.patch.dict(sys.modules, {
         "room": room_stub, "room.inference_network": room_stub, "room.profile": room_stub,
+        # The profile now also builds the trusted broker at construction. Stubbed for the same
+        # reason as the rest: this test is about the image digest, and pulling in the real room
+        # would make it a test of two repositories being checked out together.
+        "room.broker": room_stub,
     }):
         sys.path.insert(0, str(profile_dir))
         try:

@@ -601,10 +601,10 @@ def test_the_transport_is_chosen_by_the_environment_not_by_the_agent(monkeypatch
     """Which one is in use is a FACT about where the agent is running, established by whichever
     component configured it — not a flag a submission could set to change its own economics."""
     monkeypatch.delenv(relay_client.ENDPOINT_ENV, raising=False)
-    monkeypatch.delenv(relay_client.GATEWAY_ENV, raising=False)
+    monkeypatch.delenv(relay_client.BROKER_URL_ENV, raising=False)
     assert relay_client.in_sealed_room() is False
 
-    monkeypatch.setenv(relay_client.GATEWAY_ENV, "http://gateway.internal/j/route")
+    monkeypatch.setenv(relay_client.BROKER_URL_ENV, "http://broker.internal")
     assert relay_client.in_sealed_room() is True
 
 
@@ -613,13 +613,18 @@ def test_a_workdir_socket_wins_over_a_gateway_url(monkeypatch):
     A submission that somehow set the gateway variable cannot switch itself onto the miner-funded
     path to escape the lane's metering."""
     monkeypatch.setenv(relay_client.ENDPOINT_ENV, "sn22-relay+unix:///tmp/x.sock")
-    monkeypatch.setenv(relay_client.GATEWAY_ENV, "http://gateway.internal/j/route")
+    monkeypatch.setenv(relay_client.BROKER_URL_ENV, "http://broker.internal")
     assert relay_client.in_sealed_room() is False
 
 
-def test_the_room_transport_sends_the_miners_own_key(monkeypatch):
-    """The room's gateway answers 401 without it, and an agent cannot tell that apart from a bad
-    query — so the key travelling with the request is what makes a refusal mean something."""
+def test_the_room_transport_sends_a_capability_and_never_a_key(monkeypatch):
+    """This test used to assert the opposite: that the miner's decrypted key travelled with the
+    request in ``x-inference-api-key``. It did, and that was the defect -- the key had to be in the
+    agent's environment for this module to read it.
+
+    Now the client presents a capability. It reaches a NAMED OPERATION rather than a caller-supplied
+    URL, so an agent cannot point the miner's spend at a destination of its own choosing even if it
+    rewrote this file, because the broker refuses a name it does not recognise."""
     sent = {}
 
     class _Response:
@@ -635,27 +640,41 @@ def test_the_room_transport_sends_the_miners_own_key(monkeypatch):
         return _Response()
 
     monkeypatch.delenv(relay_client.ENDPOINT_ENV, raising=False)
-    monkeypatch.setenv(relay_client.GATEWAY_ENV, "http://gateway.internal/j/route")
-    monkeypatch.setenv(relay_client.GATEWAY_KEY_ENV, "sk-miner-key")
+    monkeypatch.setenv(relay_client.BROKER_URL_ENV, "http://broker.internal")
+    monkeypatch.setenv(relay_client.BROKER_CAPABILITY_ENV, "kcap_" + "0" * 32)
     import urllib.request as _urllib
     monkeypatch.setattr(_urllib, "urlopen", _urlopen)
 
     results = relay_client.search("emissions", limit=3)
 
     assert results == [{"link": "https://a.test"}]
-    assert sent["headers"]["x-inference-api-key"] == "sk-miner-key"
-    assert sent["body"] == {"op": "search", "capability": "", "query": "emissions", "limit": 3}
+    assert sent["headers"][relay_client.CAPABILITY_HEADER] == "kcap_" + "0" * 32
+    assert "x-inference-api-key" not in sent["headers"]
+    # The operation is in the PATH, and the body carries only content.
+    assert sent["url"] == "http://broker.internal/v1/op/web-search"
+    assert sent["body"] == {"query": "emissions", "count": 3}
 
 
-def test_a_room_with_no_sealed_credential_refuses_rather_than_calling(monkeypatch):
-    """A submission that shipped no sealed key would otherwise get an opaque 401. Saying so before
-    the call is the difference between "you did not seal a credential" and "the room is broken"."""
+def test_a_room_with_no_capability_refuses_rather_than_calling(monkeypatch):
+    """Without it every call comes back refused and the agent has no way to tell why."""
     monkeypatch.delenv(relay_client.ENDPOINT_ENV, raising=False)
-    monkeypatch.setenv(relay_client.GATEWAY_ENV, "http://gateway.internal/j/route")
-    monkeypatch.delenv(relay_client.GATEWAY_KEY_ENV, raising=False)
+    monkeypatch.setenv(relay_client.BROKER_URL_ENV, "http://broker.internal")
+    monkeypatch.delenv(relay_client.BROKER_CAPABILITY_ENV, raising=False)
 
-    with pytest.raises(relay_client.RelayError, match="no miner inference credential"):
+    with pytest.raises(relay_client.RelayError, match="no broker capability"):
         relay_client.search("emissions")
+
+
+def test_the_client_can_only_address_the_three_agent_operations(monkeypatch):
+    """The URL is assembled from a validated operation NAME, never from caller input. An agent that
+    rewrote this module still could not reach an evaluator operation, and the broker refuses one
+    presented with an agent capability regardless."""
+    monkeypatch.setenv(relay_client.BROKER_URL_ENV, "http://broker.internal")
+    for operation in ("web-search", "x-search", "final-summary"):
+        assert relay_client._broker_url(operation).endswith(f"/v1/op/{operation}")
+    for forbidden in ("chutes-score", "web-page-fetch", "tweet-rescrape", "../../etc", ""):
+        with pytest.raises(relay_client.RelayError):
+            relay_client._broker_url(forbidden)
 
 
 def test_the_room_transport_collapses_every_refusal(monkeypatch):
@@ -665,8 +684,8 @@ def test_the_room_transport_collapses_every_refusal(monkeypatch):
     import urllib.request as _urllib
 
     monkeypatch.delenv(relay_client.ENDPOINT_ENV, raising=False)
-    monkeypatch.setenv(relay_client.GATEWAY_ENV, "http://gateway.internal/j/route")
-    monkeypatch.setenv(relay_client.GATEWAY_KEY_ENV, "sk-miner-key")
+    monkeypatch.setenv(relay_client.BROKER_URL_ENV, "http://broker.internal")
+    monkeypatch.setenv(relay_client.BROKER_CAPABILITY_ENV, "kcap_" + "0" * 32)
 
     for code in (401, 403, 429, 502):
         def _raise(_request, timeout=None, _code=code):
@@ -677,13 +696,31 @@ def test_the_room_transport_collapses_every_refusal(monkeypatch):
             relay_client.search("emissions")
 
 
-def test_quota_in_the_room_says_it_is_unmetered_rather_than_inventing_a_number(monkeypatch):
-    """The miner funds its own calls, so the only limit is a budget the room cannot see. An agent
-    pacing itself against a made-up number would spend its real budget on the wrong things."""
-    monkeypatch.delenv(relay_client.ENDPOINT_ENV, raising=False)
-    monkeypatch.setenv(relay_client.GATEWAY_ENV, "http://gateway.internal/j/route")
+def test_quota_in_the_room_reports_the_brokers_real_per_operation_numbers(monkeypatch):
+    """This used to report ``metered: False`` and three zeroes, which was true of the old gateway:
+    the miner's own budget was the only ceiling. The broker now enforces an equal per-operation
+    quota for every contestant, so reporting "unmetered" would be a fiction an agent paces against.
+    """
+    class _Response:
+        def read(self, _n):
+            return json.dumps({"role": "agent", "operations": {
+                "web-search": {"used": 2, "max_calls": 64, "remaining": 62},
+                "final-summary": {"used": 0, "max_calls": 8, "remaining": 8}}}).encode()
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
 
-    assert relay_client.quota()["metered"] is False
+    monkeypatch.delenv(relay_client.ENDPOINT_ENV, raising=False)
+    monkeypatch.setenv(relay_client.BROKER_URL_ENV, "http://broker.internal")
+    monkeypatch.setenv(relay_client.BROKER_CAPABILITY_ENV, "kcap_" + "0" * 32)
+    import urllib.request as _urllib
+    monkeypatch.setattr(_urllib, "urlopen", lambda *_a, **_k: _Response())
+
+    reported = relay_client.quota()
+
+    assert reported["metered"] is True
+    assert reported["used"] == 2 and reported["remaining"] == 62
+    # The flat keys keep one shape across both transports; `operations` carries the detail.
+    assert reported["operations"]["final-summary"]["max_calls"] == 8
 
 
 def test_the_client_imports_no_banned_module_at_module_scope():

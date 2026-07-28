@@ -23,18 +23,21 @@ import subprocess
 import sys
 import tempfile
 
+from room.broker import ROLE_AGENT, ROLE_EVALUATOR, Broker, OperationSpec
 from room.inference_network import (
     INF_NET,
+    broker_url,
     docker,
-    ensure_inference_network_once,
-    inference_gateway_url,
-    start_inference_gateway_once,
+    ensure_broker_network_once,
 )
 from room.profile import (
-    MinerInferenceCredential,
+    MinerCredentialSet,
     TeeJobResult,
     resolve_agent_execution_timeout_seconds,
 )
+
+from kata_sn22.broker_ops import OPERATIONS as SN22_OPERATIONS
+from kata_sn22.credentials_v2 import CREDENTIAL_PROFILE, REQUIRED_PROVIDERS
 
 #: The agent image SN22 runs a submission in. An immutable digest, supplied by the deployer — never
 #: a tag: a tag is a pointer someone else can move, and this one executes untrusted code.
@@ -49,11 +52,54 @@ MAX_AGENT_OUTPUT_BYTES = 512 * 1024
 MAX_AGENT_STDERR_BYTES = 16 * 1024
 
 
+def build_broker() -> Broker:
+    """The room's trusted broker, carrying SN22's six reviewed operations.
+
+    The operation table lives in ``kata_sn22.broker_ops`` and is turned into the room's own
+    ``OperationSpec`` here. That is the seam: the base image enforces capabilities, roles and quotas
+    while knowing none of these provider names, and this file supplies them without reimplementing
+    any of the enforcement.
+    """
+    return Broker([
+        OperationSpec(
+            name=name, role=role, provider=provider, handler=handler, max_calls=max_calls,
+            # Evaluator operations are never on the network. The untrusted agent reaches the broker
+            # only over HTTP, so an operation that is not exposed there is one it cannot invoke even
+            # if it somehow obtained an evaluator token.
+            http_exposed=(role == ROLE_AGENT),
+        )
+        for name, role, provider, handler, max_calls in SN22_OPERATIONS
+    ])
+
+
 class Sn22TeeProfile:
     """Runs one SN22 task: hand the agent its sealed task, let it search, collect its answer."""
 
     #: Selects the no-docker plumbing stub the generic room uses for local tests.
     fixture_project = "fixture-task"
+
+    #: The Phase B credential contract. Four keys, all required, sealed as one set: an epoch covers
+    #: four pools and a run that discovers the fourth key missing has already spent the miner's
+    #: money on the first three.
+    credential_version = 2
+    required_providers = REQUIRED_PROVIDERS
+    credential_profile = CREDENTIAL_PROFILE
+
+    def __init__(self) -> None:
+        self._broker = build_broker()
+
+    @property
+    def broker(self) -> Broker:
+        """The trusted broker. The ONLY holder of a contestant's decrypted keys."""
+        return self._broker
+
+    def evaluator_capability(self, job_id: str) -> str:
+        """Mint the trusted evaluator's capability for a job.
+
+        Separate from the agent's, with its own quota, so an agent that burned its whole allowance
+        cannot starve the verification that is about to check its work.
+        """
+        return self._broker.issue(job_id, role=ROLE_EVALUATOR).token
 
     # ---- deployment inputs -------------------------------------------------------------------
     def agent_image(self) -> str:
@@ -70,7 +116,7 @@ class Sn22TeeProfile:
         return digest
 
     # ---- the seam ----------------------------------------------------------------------------
-    def run(self, *, project_key: str, credential: MinerInferenceCredential | None,
+    def run(self, *, project_key: str, credential: MinerCredentialSet | None,
             bundle_root: str | None, job_id: str, bundle_sha256: str) -> TeeJobResult:
         """Run the miner's agent for one sealed SN22 task and return its answer plus provenance.
 
@@ -87,21 +133,22 @@ class Sn22TeeProfile:
                 "SN22 TEE execution requires a miner-owned sealed inference credential")
         task = self._task_from(project_key)
 
-        ensure_inference_network_once()
-        start_inference_gateway_once()
-        # No deploy-time key exists. An agent whose submission shipped no sealed credential gets
-        # empty inference settings, never an operator-funded fallback -- the same rule SN60 runs on.
-        # The route is derived from the credential's PROVIDER, which is what stops an untrusted
-        # agent redirecting the miner's key at a destination of its own choosing.
-        gateway = (inference_gateway_url(job_id, credential.provider)
-                   if credential is not None else "")
-        api_key = credential.api_key if credential is not None else ""
-
-        with tempfile.TemporaryDirectory() as workdir:
-            os.chmod(workdir, 0o777)
-            answer, stderr, timed_out, returncode, truncated = self._run_agent(
-                bundle_root=bundle_root, workdir=workdir, task=task,
-                gateway=gateway, api_key=api_key)
+        ensure_broker_network_once(self._broker)
+        # The decrypted keys go into the BROKER, not into the agent. This is the whole of Phase C:
+        # what the container receives is a capability, which is worth its remaining calls and
+        # nothing else, and which is dead the moment close_job runs below.
+        self._broker.open_job(job_id, dict(credential.credentials), contestant=bundle_sha256[:12])
+        try:
+            capability = self._broker.issue(job_id, role=ROLE_AGENT).token
+            with tempfile.TemporaryDirectory() as workdir:
+                os.chmod(workdir, 0o777)
+                answer, stderr, timed_out, returncode, truncated = self._run_agent(
+                    bundle_root=bundle_root, workdir=workdir, task=task,
+                    broker=broker_url(), capability=capability)
+        finally:
+            # Always, including on an exception: a capability that outlived its job would let a
+            # slow agent keep spending the miner's money after it had been scored.
+            provider_records = self._broker.close_job(job_id)["records"]
 
         report = {
             "schema_version": 1,
@@ -124,6 +171,9 @@ class Sn22TeeProfile:
             # that no validator credential was in play, which is the whole point of the room.
             "inference_funded_by": "miner",
             "agent_image": self.agent_image(),
+            # Provider, phase, task and status per call -- the trusted broker's own record, not the
+            # agent's self-report. It rides in the provenance, so it is bound into the quote.
+            "provider_calls": provider_records,
         }
         return TeeJobResult(report=report, provenance=provenance)
 
@@ -139,7 +189,7 @@ class Sn22TeeProfile:
         return task
 
     def _run_agent(self, *, bundle_root: str, workdir: str, task: dict,
-                   gateway: str, api_key: str) -> tuple[str, str, bool, int, bool]:
+                   broker: str, capability: str) -> tuple[str, str, bool, int, bool]:
         """Start the untrusted agent container and read its one JSON answer off stdout.
 
         Everything restrictive here is deliberate and mirrors SN60's profile: no network but the
@@ -162,12 +212,12 @@ class Sn22TeeProfile:
             "--mount", f"type=bind,source={bundle_root},target=/bundle,readonly",
             "--mount", f"type=bind,source={workdir},target=/work",
             "--workdir", "/work",
-            "--env", f"SN22_INFERENCE_GATEWAY={gateway}",
-            # The miner's OWN key, decrypted in-room. Without it the gateway answers 401 and the
-            # agent has no way to tell that apart from a bad query -- so it travels with the URL,
-            # never separately.
-            "--env", f"SN22_INFERENCE_API_KEY={api_key}",
-            "--env", "SN22_PROTOCOL_VERSION=1",
+            "--env", f"SN22_BROKER_URL={broker}",
+            # A CAPABILITY, not a credential. Everything an agent can do with what it is given here
+            # is something the broker was going to allow anyway; there is no key in this container's
+            # environment, argv, /proc or filesystem for it to find.
+            "--env", f"SN22_BROKER_CAPABILITY={capability}",
+            "--env", "SN22_PROTOCOL_VERSION=2",
             "--env", f"SN22_TASK_ID={task.get('task_id')}",
             image,
             "python", "/bundle/agent.py",
