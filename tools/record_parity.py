@@ -306,6 +306,14 @@ def _upstream_case_outputs(case: dict, upstream, weights) -> dict:
 PARITY_SAMPLE_SEED = 20260101
 
 
+def _body_fetch(upstream):
+    """`body_fetch` imports bittensor at module scope, so it is reached through the shim and
+    resolved lazily -- the same treatment `search_content_relevance` gets."""
+    from neurons.validators.apify import body_fetch
+
+    return body_fetch
+
+
 def _link_meets_evidence_upstream(upstream):
     """`link_meets_evidence` lives in the reward model's module, which imports bittensor at module
     scope. It is reached through the shim like everything else, but resolved lazily so importing the
@@ -354,6 +362,8 @@ def _upstream_scalar(upstream, component: str, args: tuple):
         "is_valid_web_search_result": utils.is_valid_web_search_result,
         "min_realistic_for_budget": perf.min_realistic_for_budget,
         "perf_factor": perf.perf_factor,
+        "sanitize_body_text": _body_fetch(upstream).sanitize_body_text,
+        "is_usable_article": _body_fetch(upstream).is_usable_article,
         "highlights_in_order": bodies.highlights_in_order,
         "highlight_subset_of_body": bodies.highlight_subset_of_body,
         "cited_urls_normalized": bodies.cited_urls_normalized,
@@ -388,6 +398,10 @@ def _upstream_constants(upstream, weights) -> dict:
         "X_CONTENT_WEIGHT": weights["x_content"],
         "AI_PERF_FLOOR": perf.AI_PERF_FLOOR,
         "X_PERF_FLOOR": perf.X_PERF_FLOOR,
+        "MIN_ARTICLE_CHARS": _body_fetch(upstream)._MIN_ARTICLE_CHARS,
+        "MAX_BODY_CHARS": _body_fetch(upstream)._RAW_CACHE_CHARS,
+        "CACHE_TTL_SECONDS": _body_fetch(upstream)._CACHE_TTL_S,
+        "MAX_CACHE_ENTRIES": _body_fetch(upstream)._MAX_CACHE_ENTRIES,
     })
 
 
