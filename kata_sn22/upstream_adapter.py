@@ -23,7 +23,10 @@ Adapted (every one is a pure function of a response):
 * the performance curve and its per-mode floors;
 * nine cheap penalties: count, duplicate results, result schema, domain filter, date range, sort
   order, minimum realistic time, summary structure, timeout;
-* the reward-combination arithmetic that turns the above into one number.
+* the reward-combination arithmetic that turns the above into one number;
+* the EVIDENCE layer — `link_meets_evidence` and the ordered-highlight matching it rests on, the
+  cited-body collection the groundedness judge reads, and the random-link spot check. This is
+  upstream's anti-fabrication rule, and it decides which links are worth paying a judge to score.
 
 NOT adapted, and none of these is an oversight:
 
@@ -33,8 +36,11 @@ NOT adapted, and none of these is an oversight:
   population. Kata compares exactly two agents on one sealed challenge, so there is no pool;
 * `streaming_penalty`, which counts tokens per streamed chunk with `tiktoken`. Kata's protocol is
   one JSON response, not a stream, so the penalty has no input here;
-* `summary_rule_penalty` and the LLM relevance models, which call a paid judge. The judge is the
-  gateway's business (SN22-4/§6.1), and the *weights* it feeds are what this module supplies.
+* `summary_rule_penalty`, whose prompt asks a judge to check a summary against style rules Kata's
+  protocol already enforces structurally;
+* the judge CALL itself and the page/tweet fetchers. Those do I/O and cost money, so they live
+  behind their own seams; what this module supplies is the pure decision about *what* is worth
+  fetching and judging, and *what* the judge is shown.
 
 Every adapted symbol is registered in :mod:`kata_sn22.parity` against its upstream file and digest,
 so the set above cannot drift from what is actually proven.
@@ -43,6 +49,7 @@ from __future__ import annotations
 
 import html
 import math
+import random
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -925,6 +932,225 @@ def pool_weighted_total(scores) -> float:
     return total / total_share if total_share > 0 else 0.0
 
 
+# ---------------------------------------------------------------------------------------------
+# Evidence: what a miner must prove before anything it says is judged
+# ---------------------------------------------------------------------------------------------
+#
+# This is upstream's anti-fabrication layer, and it is the part a miner has the most to gain from
+# defeating. A miner returns links, ``miner_highlights`` (excerpts it claims are on those pages) and
+# ``miner_text``. The validator fetches the page itself and requires the highlights to appear IN
+# ORDER in both its own fetched body and the miner's claimed text. Only links that clear that reach
+# the paid judge.
+#
+# Ordering is the load-bearing detail. A membership check ("are these phrases somewhere on the
+# page?") is satisfied by a miner that scrapes a page's vocabulary and reassembles it into an
+# excerpt that was never written; requiring the excerpts to appear sequentially, non-overlapping,
+# means the miner has to have read a contiguous span of the real page.
+#
+# Matching is deliberately fuzzy in the OTHER direction: casefolded, HTML entities unescaped, and
+# every non-word character dropped. A page that renders `it's` as `it&#39;s`, or wraps a sentence
+# across markup, must not defeat an honest miner that quoted it correctly.
+
+_NON_WORD = re.compile(r"\W+")
+
+#: Links sampled for body-relevance judging per response, and how many of them may be ones the
+#: summary actually cites. The uncited pick is the spot check: a miner that returns ten links and
+#: only bothers to make its two cited ones real still gets caught.
+MAX_SAMPLED_LINKS = 3
+MAX_CITED_SAMPLE = 2
+
+_CITATION_MARKER = re.compile(r"\[\d+\]\((https?://[^)]+)\)")
+_TWEET_ID_IN_URL = re.compile(r"/status/(\d+)")
+
+
+def normalize_for_match(text: str) -> str:
+    """Casefold, unescape HTML entities, drop every non-word character (Unicode-aware)."""
+    return _NON_WORD.sub("", html.unescape(text or "").casefold())
+
+
+def highlight_subset_of_body(highlights, body) -> list:
+    """The highlights actually present in ``body``, order ignored. Used for reporting what was
+    verified, never for deciding evidence -- that is :func:`highlights_in_order`."""
+    normalized_body = normalize_for_match(body)
+    if not normalized_body:
+        return []
+    verified = []
+    for highlight in highlights or []:
+        normalized = normalize_for_match(highlight)
+        if normalized and normalized in normalized_body:
+            verified.append(highlight)
+    return verified
+
+
+def highlights_in_order(highlights, body) -> bool:
+    """True only if every highlight appears in ``body``, in order and non-overlapping.
+
+    The cursor advances past each match, so the same span cannot satisfy two highlights -- a miner
+    cannot pass by repeating one real sentence.
+    """
+    normalized_body = normalize_for_match(body)
+    if not normalized_body or not highlights:
+        return False
+    cursor = 0
+    for highlight in highlights:
+        normalized = normalize_for_match(highlight)
+        if not normalized:
+            return False
+        index = normalized_body.find(normalized, cursor)
+        if index == -1:
+            return False
+        cursor = index + len(normalized)
+    return True
+
+
+def link_meets_evidence(miner_highlights, miner_text, fetched_body) -> bool:
+    """Whether one link has earned the right to be judged.
+
+    Both directions are required, and they catch different lies. Against the VALIDATOR'S fetched
+    body: the miner did not invent the excerpt. Against the MINER'S OWN text: the miner actually
+    used what it quoted, rather than pasting real excerpts beside an answer written from elsewhere.
+    """
+    if not miner_highlights or not miner_text:
+        return False
+    if not highlights_in_order(miner_highlights, fetched_body):
+        return False
+    if not highlights_in_order(miner_highlights, miner_text):
+        return False
+    return True
+
+
+def cited_urls_normalized(summary: str) -> set:
+    """The URLs the summary actually cites, as normalized keys."""
+    return {normalize_source_url(url) for _, url in extract_markdown_links(summary)}
+
+
+def sample_cited_and_uncited(urls, cited_norm, max_cited, max_total, *, rng=None):
+    """Pick which links to spend judge calls on: some cited, and at least one that is not.
+
+    Judging is paid, so not every link can be judged. Sampling only CITED links would tell a miner
+    exactly which links are worth making real, so one uncited link is always drawn when any exists.
+    ``rng`` is injectable for tests and parity; the default is the module-level :mod:`random`,
+    which is what upstream uses.
+    """
+    picker = rng or random
+    cited = [url for url in urls if normalize_source_url(url) in cited_norm]
+    other = [url for url in urls if normalize_source_url(url) not in cited_norm]
+    picks = picker.sample(cited, min(max_cited, len(cited)))
+    if other:
+        picks.append(picker.choice(other))
+    while len(picks) < max_total:
+        pool = [url for url in urls if url not in picks]
+        if not pool:
+            break
+        picks.append(picker.choice(pool))
+    return picks
+
+
+def dedup_richest(bodies) -> list:
+    """One body per source, keeping the longest text. Two fetches of the same page can differ in
+    completeness, and the judge should read the fuller one."""
+    best: dict = {}
+    for body in bodies or []:
+        key = source_key(body.get("url", ""))
+        if key not in best or len(body.get("text") or "") > len(best[key].get("text") or ""):
+            best[key] = body
+    return list(best.values())
+
+
+def align_citation_markers(summary: str, bodies) -> str:
+    """Renumber the summary's ``[n]`` markers to match the order the bodies are shown to the judge.
+
+    The groundedness judge is asked whether a value is supported by the source the answer cites FOR
+    it. If ``[2]`` in the answer and ``[2]`` in the rendered sources are different pages, the judge
+    is answering a different question -- and would fail an honest answer.
+    """
+    index_by_key = {source_key(body.get("url", "")): i for i, body in enumerate(bodies, 1)}
+
+    def _renumber(match):
+        index = index_by_key.get(source_key(match.group(1)))
+        return f"[{index}]({match.group(1)})" if index else match.group(0)
+
+    return _CITATION_MARKER.sub(_renumber, summary or "")
+
+
+def _attr(item, name, default=None):
+    """Read ``name`` off a dict or an object. The adapter carries tweets as dicts; upstream carries
+    them as pydantic models, and this port must accept the shape it is actually given."""
+    if isinstance(item, dict):
+        value = item.get(name, default)
+    else:
+        value = getattr(item, name, default)
+    return default if value is None else value
+
+
+def tweet_relevance_text(tweet) -> str:
+    """The text a tweet is judged on: its own, plus any quoted tweet.
+
+    A reply consisting of "this" above a quoted claim is only judgeable with the quote attached.
+    """
+    text = _attr(tweet, "text", "") or ""
+    quote = _attr(tweet, "quote")
+    quoted = (_attr(quote, "text", "") or "").strip() if quote else ""
+    if not quoted:
+        return text
+    handle = _attr(_attr(quote, "user"), "username") if quote else None
+    header = f"Quoted tweet (@{handle}):" if handle else "Quoted tweet:"
+    return f"{text}\n\n{header} {quoted}"
+
+
+def collect_cited_bodies(*, validator_links, validator_tweets, cited_urls) -> list:
+    """Resolve each cited URL to a body the validator ALREADY fetched.
+
+    Never re-fetches, and never falls back to what the miner supplied: the groundedness judge's
+    whole purpose is to check the answer against independently obtained text, so a body sourced
+    from the miner would let it grade its own homework.
+    """
+    link_map = {}
+    for link in validator_links or []:
+        url = link.get("link") or link.get("url") or ""
+        text = link.get("body") or ""
+        if url and text:
+            link_map[source_key(url)] = {"url": url, "title": link.get("title", ""), "text": text}
+
+    tweet_map = {}
+    for tweet in validator_tweets or []:
+        text = tweet_relevance_text(tweet)
+        tweet_id = _attr(tweet, "id")
+        if tweet_id and text:
+            author = _attr(_attr(tweet, "user"), "username")
+            tweet_map[str(tweet_id)] = {
+                "url": _attr(tweet, "url", "") or "",
+                "title": f"Tweet by @{author}" if author else "Tweet",
+                "text": text,
+            }
+
+    bodies = []
+    for url in cited_urls or []:
+        hit = link_map.get(source_key(url))
+        if not hit:
+            match = _TWEET_ID_IN_URL.search(url)
+            if match:
+                hit = tweet_map.get(match.group(1))
+        if hit and hit.get("text"):
+            bodies.append({**hit, "url": url})
+    return dedup_richest(bodies)
+
+
+def render_cited_sources(bodies) -> str:
+    """The ``<CitedSources>`` block the groundedness judge reads.
+
+    A source whose fetch failed is shown as explicitly empty rather than omitted: the judge is told
+    not to fail an answer over a body it cannot see, and it can only apply that rule if it knows
+    the body is missing instead of silently seeing a shorter list.
+    """
+    blocks = []
+    for index, body in enumerate(bodies or [], 1):
+        text = (body.get("text") or "").strip() or "[no body could be fetched for this source]"
+        blocks.append(
+            f"[{index}] {body.get('url', '')}\nTitle: {body.get('title', '')}\nBody: {text}")
+    return "\n\n".join(blocks)
+
+
 def synthetic_created_at(offset_minutes: int = 0) -> str:
     """A ``created_at`` in upstream's Twitter format, for fixtures and the fake relay."""
     stamp = datetime(2026, 1, 1, tzinfo=timezone.utc) - timedelta(minutes=offset_minutes)
@@ -932,6 +1158,19 @@ def synthetic_created_at(offset_minutes: int = 0) -> str:
 
 
 __all__ = [
+    "MAX_CITED_SAMPLE",
+    "MAX_SAMPLED_LINKS",
+    "align_citation_markers",
+    "cited_urls_normalized",
+    "collect_cited_bodies",
+    "dedup_richest",
+    "highlight_subset_of_body",
+    "highlights_in_order",
+    "link_meets_evidence",
+    "normalize_for_match",
+    "render_cited_sources",
+    "sample_cited_and_uncited",
+    "tweet_relevance_text",
     "AI_COMPONENT_FLOORS",
     "AI_CONTENT_WEIGHT",
     "AI_MODE_WEIGHTS",

@@ -162,6 +162,30 @@ COMPONENTS: tuple[AdaptedComponent, ...] = (
     AdaptedComponent("host_in_domains", f"{_UTILS}/web_query_operators.py", "host_in_domains"),
     AdaptedComponent("parse_web_query", f"{_UTILS}/web_query_operators.py", "parse_web_query"),
 
+    # -- evidence: what a miner must prove before anything it says is judged --------------------
+    # The anti-fabrication layer, and the part a miner has the most to gain from defeating. Ported
+    # from upstream's own helpers rather than reimplemented: an evidence rule that is nearly right
+    # is a rule that lets a class of fabrication through, and "nearly" is not visible in review.
+    AdaptedComponent("highlights_in_order", f"{_UTILS}/source_bodies.py", "highlights_in_order"),
+    AdaptedComponent("highlight_subset_of_body", f"{_UTILS}/source_bodies.py",
+                     "highlight_subset_of_body"),
+    AdaptedComponent("cited_urls_normalized", f"{_UTILS}/source_bodies.py",
+                     "cited_urls_normalized"),
+    AdaptedComponent("dedup_richest", f"{_UTILS}/source_bodies.py", "dedup_richest"),
+    AdaptedComponent("align_citation_markers", f"{_UTILS}/source_bodies.py",
+                     "align_citation_markers"),
+    AdaptedComponent("sample_cited_and_uncited", f"{_UTILS}/source_bodies.py",
+                     "sample_cited_and_uncited",
+                     note="the random-link spot check; executed under a fixed seed on both sides"),
+    AdaptedComponent("link_meets_evidence", f"{_REWARD}/search_content_relevance.py",
+                     "link_meets_evidence",
+                     note="highlights must appear in order in BOTH the validator's fetched body "
+                          "and the miner's own claimed text"),
+    AdaptedComponent("MAX_SAMPLED_LINKS", f"{_REWARD}/search_content_relevance.py",
+                     "MAX_SAMPLED_LINKS"),
+    AdaptedComponent("MAX_CITED_SAMPLE", f"{_REWARD}/search_content_relevance.py",
+                     "MAX_CITED_SAMPLE"),
+
     # -- validity predicates -------------------------------------------------------------------
     AdaptedComponent("format_text_for_match", "desearch/utils.py", "format_text_for_match"),
     AdaptedComponent("is_valid_tweet", "desearch/utils.py", "is_valid_tweet"),
@@ -419,6 +443,45 @@ PARITY_CASES: tuple[dict, ...] = (
 #: Scalar probes for components a response-shaped case cannot isolate. Each is
 #: ``(component, args)``; the recorder calls the upstream symbol with the same arguments.
 SCALAR_PROBES: tuple[tuple[str, tuple], ...] = (
+    # -- evidence ------------------------------------------------------------------------------
+    # Ordering, and the two directions of the check, are what make this an anti-fabrication rule
+    # rather than a keyword match. Each probe below is one way a miner could try to pass.
+    ("highlights_in_order", (["alpha beta", "gamma delta"], "ALPHA BETA then GAMMA DELTA")),
+    # Out of order on the page: the miner scraped the vocabulary, not a contiguous span.
+    ("highlights_in_order", (["gamma delta", "alpha beta"], "ALPHA BETA then GAMMA DELTA")),
+    # Non-overlapping: one real sentence must not satisfy two highlights.
+    ("highlights_in_order", (["alpha", "alpha"], "alpha once only")),
+    ("highlights_in_order", (["alpha", "alpha"], "alpha and alpha again")),
+    # Fuzzy matching must survive entities, case and punctuation an honest quote would lose.
+    ("highlights_in_order", (["it's here"], "IT&#39;S    HERE")),
+    ("highlights_in_order", (["caf\u00e9 r\u00e9sum\u00e9"], "Caf\u00e9, R\u00e9sum\u00e9!")),
+    ("highlights_in_order", ([], "anything")),
+    ("highlights_in_order", (["alpha"], "")),
+    ("highlights_in_order", ([""], "alpha")),
+    ("highlight_subset_of_body", (["alpha", "missing", "beta"], "beta then alpha")),
+    ("highlight_subset_of_body", (["alpha"], "")),
+    ("highlight_subset_of_body", ([], "body")),
+    ("link_meets_evidence", (["alpha"], "alpha in miner text", "alpha in fetched body")),
+    # On the page but not in the miner's own answer: real excerpts pasted beside a fabricated text.
+    ("link_meets_evidence", (["alpha"], "unrelated miner text", "alpha in fetched body")),
+    # In the miner's answer but not on the page: invented excerpt.
+    ("link_meets_evidence", (["alpha"], "alpha in miner text", "unrelated fetched body")),
+    ("link_meets_evidence", ([], "alpha", "alpha")),
+    ("link_meets_evidence", (["alpha"], "", "alpha")),
+    ("cited_urls_normalized", ("see [1](https://WWW.Example.com/a/) and [2](https://b.test/x)",)),
+    ("cited_urls_normalized", ("no citations here",)),
+    ("dedup_richest", ([{"url": "https://example.com/a", "text": "short"},
+                        {"url": "https://www.example.com/a/", "text": "a much longer body"}],)),
+    ("dedup_richest", ([],)),
+    ("align_citation_markers", ("value [2](https://b.test) and [1](https://a.test)",
+                                [{"url": "https://a.test"}, {"url": "https://b.test"}])),
+    ("align_citation_markers", ("uncited [9](https://z.test)", [{"url": "https://a.test"}])),
+    ("align_citation_markers", ("", [])),
+    # The spot check: two cited links plus one uncited, so an uncited link is always drawn.
+    ("sample_cited_and_uncited", (["https://a.test", "https://b.test", "https://c.test"],
+                                  {"https://a.test", "https://b.test"}, 2, 3)),
+    ("sample_cited_and_uncited", (["https://a.test"], {"https://a.test"}, 2, 3)),
+    ("sample_cited_and_uncited", ([], set(), 2, 3)),
     ("normalize_source_url", ("https://WWW.Example.com/Path/",)),
     ("normalize_source_url", ("http://www.example.com/x",)),
     ("normalize_source_url", ("",)),
@@ -540,7 +603,28 @@ _SCALAR_ADAPTER_FUNCTIONS = {
     "is_descending_by_created_at": adapter.is_descending_by_created_at,
     "is_valid_tweet": adapter.is_valid_tweet,
     "is_valid_web_search_result": adapter.is_valid_web_search_result,
+    "highlights_in_order": adapter.highlights_in_order,
+    "highlight_subset_of_body": adapter.highlight_subset_of_body,
+    "link_meets_evidence": adapter.link_meets_evidence,
+    "cited_urls_normalized": adapter.cited_urls_normalized,
+    "dedup_richest": adapter.dedup_richest,
+    "align_citation_markers": adapter.align_citation_markers,
+    # Seeded on this side too, with the same seed the recorder uses. A sampling function is only
+    # parity-checkable if both sides draw from the same stream, and stating the seed in one place
+    # each is what keeps that honest rather than accidental.
+    "sample_cited_and_uncited": lambda *args: _seeded_sample(*args),
 }
+
+
+#: Seed for the one sampled component. Must match ``tools/record_parity.PARITY_SAMPLE_SEED``.
+PARITY_SAMPLE_SEED = 20260101
+
+
+def _seeded_sample(*args):
+    import random
+
+    random.seed(PARITY_SAMPLE_SEED)
+    return adapter.sample_cited_and_uncited(*args)
 
 #: The weight tables, compared value-for-value against the pinned upstream. A constant is the
 #: cheapest thing to get wrong and the most expensive to notice: a wrong 0.20 changes every score
@@ -576,6 +660,10 @@ def normalize_value(value):
         return round(value, 12)
     if isinstance(value, (list, tuple)):
         return [normalize_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        # A set has no order, so it is compared as its SORTED members. Comparing it as an
+        # arbitrary-order list would make parity depend on hash seeding rather than on the answer.
+        return sorted(normalize_value(item) for item in value)
     if isinstance(value, dict):
         return {str(k): normalize_value(v)
                 for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}

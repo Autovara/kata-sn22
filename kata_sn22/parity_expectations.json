@@ -633,6 +633,311 @@
   "scalars": [
     {
       "args": [
+        [
+          "alpha beta",
+          "gamma delta"
+        ],
+        "ALPHA BETA then GAMMA DELTA"
+      ],
+      "component": "highlights_in_order",
+      "value": true
+    },
+    {
+      "args": [
+        [
+          "gamma delta",
+          "alpha beta"
+        ],
+        "ALPHA BETA then GAMMA DELTA"
+      ],
+      "component": "highlights_in_order",
+      "value": false
+    },
+    {
+      "args": [
+        [
+          "alpha",
+          "alpha"
+        ],
+        "alpha once only"
+      ],
+      "component": "highlights_in_order",
+      "value": false
+    },
+    {
+      "args": [
+        [
+          "alpha",
+          "alpha"
+        ],
+        "alpha and alpha again"
+      ],
+      "component": "highlights_in_order",
+      "value": true
+    },
+    {
+      "args": [
+        [
+          "it's here"
+        ],
+        "IT&#39;S    HERE"
+      ],
+      "component": "highlights_in_order",
+      "value": true
+    },
+    {
+      "args": [
+        [
+          "caf\u00e9 r\u00e9sum\u00e9"
+        ],
+        "Caf\u00e9, R\u00e9sum\u00e9!"
+      ],
+      "component": "highlights_in_order",
+      "value": true
+    },
+    {
+      "args": [
+        [],
+        "anything"
+      ],
+      "component": "highlights_in_order",
+      "value": false
+    },
+    {
+      "args": [
+        [
+          "alpha"
+        ],
+        ""
+      ],
+      "component": "highlights_in_order",
+      "value": false
+    },
+    {
+      "args": [
+        [
+          ""
+        ],
+        "alpha"
+      ],
+      "component": "highlights_in_order",
+      "value": false
+    },
+    {
+      "args": [
+        [
+          "alpha",
+          "missing",
+          "beta"
+        ],
+        "beta then alpha"
+      ],
+      "component": "highlight_subset_of_body",
+      "value": [
+        "alpha",
+        "beta"
+      ]
+    },
+    {
+      "args": [
+        [
+          "alpha"
+        ],
+        ""
+      ],
+      "component": "highlight_subset_of_body",
+      "value": []
+    },
+    {
+      "args": [
+        [],
+        "body"
+      ],
+      "component": "highlight_subset_of_body",
+      "value": []
+    },
+    {
+      "args": [
+        [
+          "alpha"
+        ],
+        "alpha in miner text",
+        "alpha in fetched body"
+      ],
+      "component": "link_meets_evidence",
+      "value": true
+    },
+    {
+      "args": [
+        [
+          "alpha"
+        ],
+        "unrelated miner text",
+        "alpha in fetched body"
+      ],
+      "component": "link_meets_evidence",
+      "value": false
+    },
+    {
+      "args": [
+        [
+          "alpha"
+        ],
+        "alpha in miner text",
+        "unrelated fetched body"
+      ],
+      "component": "link_meets_evidence",
+      "value": false
+    },
+    {
+      "args": [
+        [],
+        "alpha",
+        "alpha"
+      ],
+      "component": "link_meets_evidence",
+      "value": false
+    },
+    {
+      "args": [
+        [
+          "alpha"
+        ],
+        "",
+        "alpha"
+      ],
+      "component": "link_meets_evidence",
+      "value": false
+    },
+    {
+      "args": [
+        "see [1](https://WWW.Example.com/a/) and [2](https://b.test/x)"
+      ],
+      "component": "cited_urls_normalized",
+      "value": [
+        "https://b.test/x",
+        "https://example.com/a"
+      ]
+    },
+    {
+      "args": [
+        "no citations here"
+      ],
+      "component": "cited_urls_normalized",
+      "value": []
+    },
+    {
+      "args": [
+        [
+          {
+            "text": "short",
+            "url": "https://example.com/a"
+          },
+          {
+            "text": "a much longer body",
+            "url": "https://www.example.com/a/"
+          }
+        ]
+      ],
+      "component": "dedup_richest",
+      "value": [
+        {
+          "text": "a much longer body",
+          "url": "https://www.example.com/a/"
+        }
+      ]
+    },
+    {
+      "args": [
+        []
+      ],
+      "component": "dedup_richest",
+      "value": []
+    },
+    {
+      "args": [
+        "value [2](https://b.test) and [1](https://a.test)",
+        [
+          {
+            "url": "https://a.test"
+          },
+          {
+            "url": "https://b.test"
+          }
+        ]
+      ],
+      "component": "align_citation_markers",
+      "value": "value [2](https://b.test) and [1](https://a.test)"
+    },
+    {
+      "args": [
+        "uncited [9](https://z.test)",
+        [
+          {
+            "url": "https://a.test"
+          }
+        ]
+      ],
+      "component": "align_citation_markers",
+      "value": "uncited [9](https://z.test)"
+    },
+    {
+      "args": [
+        "",
+        []
+      ],
+      "component": "align_citation_markers",
+      "value": ""
+    },
+    {
+      "args": [
+        [
+          "https://a.test",
+          "https://b.test",
+          "https://c.test"
+        ],
+        [
+          "https://a.test",
+          "https://b.test"
+        ],
+        2,
+        3
+      ],
+      "component": "sample_cited_and_uncited",
+      "value": [
+        "https://a.test",
+        "https://b.test",
+        "https://c.test"
+      ]
+    },
+    {
+      "args": [
+        [
+          "https://a.test"
+        ],
+        [
+          "https://a.test"
+        ],
+        2,
+        3
+      ],
+      "component": "sample_cited_and_uncited",
+      "value": [
+        "https://a.test"
+      ]
+    },
+    {
+      "args": [
+        [],
+        [],
+        2,
+        3
+      ],
+      "component": "sample_cited_and_uncited",
+      "value": []
+    },
+    {
+      "args": [
         "https://WWW.Example.com/Path/"
       ],
       "component": "normalize_source_url",
@@ -1115,6 +1420,22 @@
       "upstream_path": "neurons/validators/scoring/constants.py",
       "upstream_symbol": "AI_MODE_WEIGHTS"
     },
+    "MAX_CITED_SAMPLE": {
+      "executed": true,
+      "file_sha256": "10a23a9ed06ffa59d933efc9ee1f30abc296d3df579d387be9dc3823477238bd",
+      "symbol_lines": 1,
+      "symbol_sha256": "eaa3dc7b5bbb2478d36ef101b5c2cd5d795b6e386be5f4417267f919d0aca176",
+      "upstream_path": "neurons/validators/reward/search_content_relevance.py",
+      "upstream_symbol": "MAX_CITED_SAMPLE"
+    },
+    "MAX_SAMPLED_LINKS": {
+      "executed": true,
+      "file_sha256": "10a23a9ed06ffa59d933efc9ee1f30abc296d3df579d387be9dc3823477238bd",
+      "symbol_lines": 1,
+      "symbol_sha256": "8ae2e56b20ac31bfc6df3f3f70c63acab0e588869fdae5624d533af11d8d66ae",
+      "upstream_path": "neurons/validators/reward/search_content_relevance.py",
+      "upstream_symbol": "MAX_SAMPLED_LINKS"
+    },
     "MODE_BUDGETS": {
       "executed": true,
       "file_sha256": "9ce4cb4ec65515045fe825ee0edba09e47efdb3499450aafd8e8d1dcce2188e3",
@@ -1163,6 +1484,14 @@
       "upstream_path": "neurons/validators/scrapers/x_scraper_validator.py",
       "upstream_symbol": "XScraperValidator.__init__"
     },
+    "align_citation_markers": {
+      "executed": true,
+      "file_sha256": "029448fbdfb61aee95128e15f0b1aeff19fd8973e1a589b78a35f8fb96698ee8",
+      "symbol_lines": 8,
+      "symbol_sha256": "e4fa0d49606b80652fa43afed39fa982ecd062a7d6c9768d98303c12723e43f4",
+      "upstream_path": "neurons/validators/utils/source_bodies.py",
+      "upstream_symbol": "align_citation_markers"
+    },
     "applied_penalty": {
       "executed": true,
       "file_sha256": "c6799ac5c490eb529cd95b1165d627fe7a0aa6841d16e3769b9a7db363cfae77",
@@ -1178,6 +1507,14 @@
       "symbol_sha256": "221d1b2339342f240946e215a4b4e0fd41302fb7d7963b81fef8f4cb07c11223",
       "upstream_path": "neurons/validators/utils/response_checks.py",
       "upstream_symbol": "check_markdown_structure"
+    },
+    "cited_urls_normalized": {
+      "executed": true,
+      "file_sha256": "029448fbdfb61aee95128e15f0b1aeff19fd8973e1a589b78a35f8fb96698ee8",
+      "symbol_lines": 2,
+      "symbol_sha256": "60c3cd330ef2ad938c640213d1574712a24bad720426eb0cceac0ccac2fda566",
+      "upstream_path": "neurons/validators/utils/source_bodies.py",
+      "upstream_symbol": "cited_urls_normalized"
     },
     "collect_summary_sources": {
       "executed": true,
@@ -1202,6 +1539,14 @@
       "symbol_sha256": "e5cdc7b3f57905c1bd4956ce3c9d7d413430d51a21ff57693317624551e66729",
       "upstream_path": "neurons/validators/penalty/date_range_penalty.py",
       "upstream_symbol": "DateRangePenaltyModel.penalty_for"
+    },
+    "dedup_richest": {
+      "executed": true,
+      "file_sha256": "029448fbdfb61aee95128e15f0b1aeff19fd8973e1a589b78a35f8fb96698ee8",
+      "symbol_lines": 9,
+      "symbol_sha256": "e6708808f2a2411422b2b2b317472e131e14ee51ff0483e78c328e865252b3ab",
+      "upstream_path": "neurons/validators/utils/source_bodies.py",
+      "upstream_symbol": "dedup_richest"
     },
     "domain_filter_penalty": {
       "executed": true,
@@ -1243,6 +1588,22 @@
       "upstream_path": "desearch/utils.py",
       "upstream_symbol": "format_text_for_match"
     },
+    "highlight_subset_of_body": {
+      "executed": true,
+      "file_sha256": "029448fbdfb61aee95128e15f0b1aeff19fd8973e1a589b78a35f8fb96698ee8",
+      "symbol_lines": 11,
+      "symbol_sha256": "0cc2d2c7fe8c684e7b3a88d4acbe84d02d345323d9ba9120c9d3a4723fec1b9a",
+      "upstream_path": "neurons/validators/utils/source_bodies.py",
+      "upstream_symbol": "highlight_subset_of_body"
+    },
+    "highlights_in_order": {
+      "executed": true,
+      "file_sha256": "029448fbdfb61aee95128e15f0b1aeff19fd8973e1a589b78a35f8fb96698ee8",
+      "symbol_lines": 15,
+      "symbol_sha256": "4d3774adbfa51ba1c872bf204cba2537b1a859ff9f882b90633a85f315aee55c",
+      "upstream_path": "neurons/validators/utils/source_bodies.py",
+      "upstream_symbol": "highlights_in_order"
+    },
     "host_in_domains": {
       "executed": true,
       "file_sha256": "9ed7a75666b166f50d4a96fd7d48b8dfa2d9d47f4d8b15f0ebc3d66e8cab6b8f",
@@ -1274,6 +1635,14 @@
       "symbol_sha256": "6319db8b3ac674687a14128d3ef5dff7769acc7ab5eeaa5f566848dbadd2f97e",
       "upstream_path": "desearch/utils.py",
       "upstream_symbol": "is_valid_web_search_result"
+    },
+    "link_meets_evidence": {
+      "executed": true,
+      "file_sha256": "10a23a9ed06ffa59d933efc9ee1f30abc296d3df579d387be9dc3823477238bd",
+      "symbol_lines": 8,
+      "symbol_sha256": "a27c6dcdbdc0612fe145e74924e170c9e4ba56660ab704cb297e9cab965d049c",
+      "upstream_path": "neurons/validators/reward/search_content_relevance.py",
+      "upstream_symbol": "link_meets_evidence"
     },
     "min_realistic_for_budget": {
       "executed": true,
@@ -1362,6 +1731,14 @@
       "symbol_sha256": "0829557d30306e781fc99b500ca3ff8c4d0b8e95f47065e05d866c2495b0b6b7",
       "upstream_path": "neurons/validators/scrapers/advanced_scraper_validator.py",
       "upstream_symbol": "AdvancedScraperValidator.compute_reward_weights_matrix"
+    },
+    "sample_cited_and_uncited": {
+      "executed": true,
+      "file_sha256": "029448fbdfb61aee95128e15f0b1aeff19fd8973e1a589b78a35f8fb96698ee8",
+      "symbol_lines": 12,
+      "symbol_sha256": "35e0178649ae692958a1692c5782175118e1a0804250781ae68c4a0b373d8afe",
+      "upstream_path": "neurons/validators/utils/source_bodies.py",
+      "upstream_symbol": "sample_cited_and_uncited"
     },
     "score_response": {
       "executed": false,

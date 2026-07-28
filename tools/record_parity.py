@@ -177,7 +177,7 @@ def _import_upstream(root: Path) -> dict:
     from neurons.validators.reward import performance_reward as perf
     from neurons.validators.scoring import constants as scoring_constants
     from neurons.validators.scrapers import advanced_scraper_validator as advanced
-    from neurons.validators.utils import response_checks, web_query_operators
+    from neurons.validators.utils import response_checks, source_bodies, web_query_operators
 
     return {
         "numpy": numpy,
@@ -186,6 +186,7 @@ def _import_upstream(root: Path) -> dict:
         "penalty_base": penalty_base,
         "response_checks": response_checks,
         "web_query_operators": web_query_operators,
+        "source_bodies": source_bodies,
         "perf": perf,
         "scoring_constants": scoring_constants,
         "advanced": advanced,
@@ -301,11 +302,33 @@ def _upstream_case_outputs(case: dict, upstream, weights) -> dict:
     return parity.normalize_value(outputs)
 
 
+#: Seed used for the one sampled component, on both the recording and checking sides.
+PARITY_SAMPLE_SEED = 20260101
+
+
+def _link_meets_evidence_upstream(upstream):
+    """`link_meets_evidence` lives in the reward model's module, which imports bittensor at module
+    scope. It is reached through the shim like everything else, but resolved lazily so importing the
+    recorder does not pull the whole reward stack in."""
+    from neurons.validators.reward.search_content_relevance import link_meets_evidence
+
+    return link_meets_evidence
+
+
 def _upstream_scalar(upstream, component: str, args: tuple):
     checks = upstream["response_checks"]
     operators = upstream["web_query_operators"]
     perf = upstream["perf"]
     utils = upstream["desearch_utils"]
+    bodies = upstream["source_bodies"]
+
+    if component == "sample_cited_and_uncited":
+        # The only sampled component. Upstream draws from the module-level `random`, so both sides
+        # are seeded identically before the call and the recorded value is the sequence that seed
+        # produces -- which is what makes a sampling function parity-checkable at all.
+        import random as _random
+        _random.seed(PARITY_SAMPLE_SEED)
+        return bodies.sample_cited_and_uncited(*args)
 
     if component == "first_duplicate_id":
         items, key = args
@@ -331,6 +354,12 @@ def _upstream_scalar(upstream, component: str, args: tuple):
         "is_valid_web_search_result": utils.is_valid_web_search_result,
         "min_realistic_for_budget": perf.min_realistic_for_budget,
         "perf_factor": perf.perf_factor,
+        "highlights_in_order": bodies.highlights_in_order,
+        "highlight_subset_of_body": bodies.highlight_subset_of_body,
+        "cited_urls_normalized": bodies.cited_urls_normalized,
+        "dedup_richest": bodies.dedup_richest,
+        "align_citation_markers": bodies.align_citation_markers,
+        "link_meets_evidence": _link_meets_evidence_upstream(upstream),
     }
     return table[component](*args)
 
