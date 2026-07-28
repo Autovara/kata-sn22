@@ -22,7 +22,6 @@ import os
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
 
 from room.inference_network import (
     INF_NET,
