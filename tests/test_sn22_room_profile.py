@@ -111,7 +111,8 @@ def test_a_real_task_reaches_the_agent_at_all(profile, credential, tmp_path):
                         job_id=JOB_ID, bundle_sha256="c" * 64)
 
     assert calls, "the profile never started an agent container"
-    assert result.report["task_id"] == "t000"
+    # Since Phase F a job is a POOL. A bare task descriptor is still accepted as a pool of one.
+    assert [task["task_id"] for task in result.report["tasks"]] == ["t000"]
 
 
 def test_no_provider_key_reaches_the_agent_container(profile, credential, tmp_path):
@@ -273,3 +274,140 @@ def test_the_build_scripts_refuse_a_mutable_base_and_a_foreign_platform():
         body = script.read_text(encoding="utf-8")
         assert "@sha256:" in body and "must be an immutable image digest" in body, script.name
         assert "linux/amd64" in body, script.name
+
+
+# ---- per-pool jobs ---
+#
+# Sixty tasks behind one HTTP request is one timeout away from losing every answer already paid
+# for. Four bounded pool jobs per contestant lose at most a quarter, and each is separately
+# attested.
+
+POOL_JOB = json.dumps({
+    "pool": "ai_search:fast",
+    "tasks": [
+        {"protocol_version": 2, "task_id": f"t{index:03d}", "search_type": "ai_search",
+         "prompt": "what were 2024 emissions?", "mode": "fast",
+         "result_type": "LINKS_WITH_FINAL_SUMMARY", "tools": ["Web Search"], "count": 10,
+         "limits": {"max_execution_time": 15}}
+        for index in range(15)
+    ],
+})
+
+
+def test_a_pool_job_runs_every_task(profile, credential, tmp_path):
+    plugin, calls = profile
+    (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
+
+    result = plugin.run(project_key=POOL_JOB, credential=credential,
+                        bundle_root=str(tmp_path), job_id=JOB_ID, bundle_sha256="c" * 64)
+
+    assert len(calls) == 15, "the pool did not run every task"
+    assert result.report["pool"] == "ai_search:fast"
+    assert [task["task_id"] for task in result.report["tasks"]] == [
+        f"t{index:03d}" for index in range(15)]
+
+
+def test_pool_results_come_back_in_task_order_not_completion_order(profile, credential, tmp_path):
+    """Two contestants' reports have to line up task for task, and a thread pool does not promise
+    completion order."""
+    import random
+    import time as _time
+
+    plugin, _calls = profile
+    (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
+
+    original = plugin._run_agent
+
+    def _jittered(**kwargs):
+        _time.sleep(random.uniform(0, 0.01))
+        return original(**kwargs)
+
+    plugin._run_agent = _jittered
+    result = plugin.run(project_key=POOL_JOB, credential=credential,
+                        bundle_root=str(tmp_path), job_id=JOB_ID, bundle_sha256="c" * 64)
+
+    assert [task["task_id"] for task in result.report["tasks"]] == [
+        f"t{index:03d}" for index in range(15)]
+
+
+def test_task_concurrency_is_bounded(profile, credential, tmp_path):
+    """Fifteen agent containers at once would contend for the room's memory and CPU, and a
+    contestant whose tasks contended with each other would post a worse process_time for a reason
+    unrelated to its answers."""
+    import threading
+
+    import tee_profile as profile_module
+
+    plugin, _calls = profile
+    (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
+
+    live = 0
+    peak = 0
+    lock = threading.Lock()
+    original = plugin._run_agent
+
+    def _counted(**kwargs):
+        nonlocal live, peak
+        with lock:
+            live += 1
+            peak = max(peak, live)
+        try:
+            return original(**kwargs)
+        finally:
+            with lock:
+                live -= 1
+
+    plugin._run_agent = _counted
+    plugin.run(project_key=POOL_JOB, credential=credential, bundle_root=str(tmp_path),
+               job_id=JOB_ID, bundle_sha256="c" * 64)
+
+    assert peak <= profile_module.TASK_CONCURRENCY, f"{peak} agents ran at once"
+
+
+def test_the_room_measures_each_task_rather_than_trusting_the_agent(profile, credential, tmp_path):
+    """``process_time`` drives upstream's performance reward and timeout penalty. An agent that
+    reported its own would be grading its own speed."""
+    plugin, _calls = profile
+    (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
+
+    result = plugin.run(project_key=POOL_JOB, credential=credential,
+                        bundle_root=str(tmp_path), job_id=JOB_ID, bundle_sha256="c" * 64)
+
+    for task in result.report["tasks"]:
+        assert isinstance(task["process_time"], float)
+        assert task["process_time"] >= 0.0
+
+
+def test_one_capability_covers_the_whole_pool_and_dies_with_it(profile, credential, tmp_path):
+    """Minting one per task would give a contestant fifteen times the allowance."""
+    from room.broker import BrokerDenied
+
+    plugin, calls = profile
+    (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
+
+    plugin.run(project_key=POOL_JOB, credential=credential, bundle_root=str(tmp_path),
+               job_id=JOB_ID, bundle_sha256="c" * 64)
+
+    tokens = {_env_of(argv)["SN22_BROKER_CAPABILITY"] for argv in calls}
+    assert len(tokens) == 1, "a capability was minted per task"
+    with pytest.raises(BrokerDenied):
+        plugin.broker.dispatch(tokens.pop(), "web-search", {"query": "x"}, over_http=True)
+
+
+@pytest.mark.parametrize("bad", [
+    '{"pool": "ai_search:fast"}',
+    '{"pool": "ai_search:fast", "tasks": []}',
+    '{"tasks": [{"task_id": "t0"}]}',
+    '{"pool": "ai_search:fast", "tasks": [{"prompt": "no task_id"}]}',
+    "not json",
+    '["a list"]',
+])
+def test_a_malformed_pool_job_is_refused(profile, credential, tmp_path, bad):
+    """Refused before an agent starts, so a malformed job costs the contestant nothing."""
+    plugin, calls = profile
+    (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
+
+    with pytest.raises(RuntimeError):
+        plugin.run(project_key=bad, credential=credential, bundle_root=str(tmp_path),
+                   job_id=JOB_ID, bundle_sha256="c" * 64)
+    assert not calls, "an agent was started for a malformed pool job"

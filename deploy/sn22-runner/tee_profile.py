@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
 from room.broker import ROLE_AGENT, ROLE_EVALUATOR, Broker, OperationSpec
 from room.inference_network import (
@@ -50,6 +51,12 @@ DEFAULT_AGENT_MEMORY = "2g"
 DEFAULT_AGENT_CPUS = "2"
 MAX_AGENT_OUTPUT_BYTES = 512 * 1024
 MAX_AGENT_STDERR_BYTES = 16 * 1024
+
+#: Agent containers running at once inside one pool job. Fixed rather than tuned: it bounds the
+#: room's memory and CPU without changing task contents or score arithmetic, and a contestant whose
+#: tasks happened to contend with each other would post a worse process_time for a reason unrelated
+#: to its answers.
+TASK_CONCURRENCY = 3
 
 
 def build_broker() -> Broker:
@@ -118,10 +125,17 @@ class Sn22TeeProfile:
     # ---- the seam ----------------------------------------------------------------------------
     def run(self, *, project_key: str, credential: MinerCredentialSet | None,
             bundle_root: str | None, job_id: str, bundle_sha256: str) -> TeeJobResult:
-        """Run the miner's agent for one sealed SN22 task and return its answer plus provenance.
+        """Run one contestant's POOL: fifteen tasks, then score them with the real upstream.
 
-        ``project_key`` carries the lane's task descriptor (the JSON the agent receives on stdin),
-        so the question comes from the validator and the answer's cost comes from the miner.
+        ``project_key`` carries the pool job -- the pool name and its fifteen task descriptors --
+        so the questions come from the validator and the answers' cost comes from the miner.
+
+        **One pool per request, not a whole epoch.** Sixty tasks behind one HTTP call is one
+        timeout away from losing every answer already paid for; four bounded jobs per contestant
+        lose at most a quarter, and each one is separately attested.
+
+        A single task descriptor is still accepted, and is treated as a pool of one. That keeps the
+        earlier single-task callers working while the epoch path is wired up.
         """
         if project_key == self.fixture_project:
             return self._fixture_result(job_id=job_id, bundle_sha256=bundle_sha256)
@@ -131,7 +145,7 @@ class Sn22TeeProfile:
         if credential is None:
             raise RuntimeError(
                 "SN22 TEE execution requires a miner-owned sealed inference credential")
-        task = self._task_from(project_key)
+        pool, tasks = self._pool_from(project_key)
 
         ensure_broker_network_once(self._broker)
         # The decrypted keys go into the BROKER, not into the agent. This is the whole of Phase C:
@@ -140,11 +154,9 @@ class Sn22TeeProfile:
         self._broker.open_job(job_id, dict(credential.credentials), contestant=bundle_sha256[:12])
         try:
             capability = self._broker.issue(job_id, role=ROLE_AGENT).token
-            with tempfile.TemporaryDirectory() as workdir:
-                os.chmod(workdir, 0o777)
-                answer, stderr, timed_out, returncode, truncated = self._run_agent(
-                    bundle_root=bundle_root, workdir=workdir, task=task,
-                    broker=broker_url(), capability=capability)
+            attempts = self._run_pool(
+                bundle_root=bundle_root, tasks=tasks, broker=broker_url(),
+                capability=capability)
         finally:
             # Always, including on an exception: a capability that outlived its job would let a
             # slow agent keep spending the miner's money after it had been scored.
@@ -152,21 +164,31 @@ class Sn22TeeProfile:
 
         report = {
             "schema_version": 1,
-            "task_id": task.get("task_id"),
-            "answer": answer,
-            "timed_out": timed_out,
-            "returncode": returncode,
-            "truncated": truncated,
+            "pool": pool,
+            "tasks": [
+                {
+                    "task_id": attempt["task_id"],
+                    "answer": attempt["answer"],
+                    "timed_out": attempt["timed_out"],
+                    "returncode": attempt["returncode"],
+                    "truncated": attempt["truncated"],
+                    "process_time": attempt["process_time"],
+                }
+                for attempt in attempts
+            ],
             # Truncated and kept for the operator only. It is the miner's own process output and is
             # never scored -- a candidate that could influence scoring by what it printed to stderr
             # would be scoring itself.
-            "stderr_tail": stderr[-4000:] if stderr else "",
+            "stderr_tail": "\n".join(
+                attempt["stderr"][-2000:] for attempt in attempts if attempt["stderr"])[-4000:],
         }
         provenance = {
             "profile": "sn22",
             "job_id": job_id,
             "bundle_sha256": bundle_sha256,
-            "task_id": task.get("task_id"),
+            "pool": pool,
+            "task_ids": [attempt["task_id"] for attempt in attempts],
+            "task_concurrency": TASK_CONCURRENCY,
             # The MINER funded this run. Recorded in the attestation so a later cost review can see
             # that no validator credential was in play, which is the whole point of the room.
             "inference_funded_by": "miner",
@@ -179,14 +201,74 @@ class Sn22TeeProfile:
 
     # ---- internals ---------------------------------------------------------------------------
     @staticmethod
-    def _task_from(project_key: str) -> dict:
+    def _pool_from(project_key: str) -> tuple:
+        """``(pool_name, tasks)`` from the pool job, or from a single task descriptor.
+
+        Both shapes are accepted on purpose. A bare task is a pool of one, which is what the
+        pre-epoch callers send; refusing it would break them for no gain while the epoch path is
+        still being wired.
+        """
         try:
-            task = json.loads(project_key)
+            document = json.loads(project_key)
         except ValueError as exc:
-            raise RuntimeError(f"SN22 project_key must be the task JSON: {exc}") from exc
-        if not isinstance(task, dict) or not task.get("task_id"):
-            raise RuntimeError("SN22 task JSON must be an object carrying a task_id")
-        return task
+            raise RuntimeError(f"SN22 project_key must be the pool job JSON: {exc}") from exc
+        if not isinstance(document, dict):
+            raise RuntimeError("SN22 pool job must be a JSON object")
+
+        if document.get("task_id"):
+            return "", [document]
+
+        pool = str(document.get("pool") or "")
+        tasks = document.get("tasks")
+        if not pool or not isinstance(tasks, list) or not tasks:
+            raise RuntimeError(
+                "SN22 pool job must carry a pool name and a non-empty tasks list")
+        for task in tasks:
+            if not isinstance(task, dict) or not task.get("task_id"):
+                raise RuntimeError("every SN22 task must be an object carrying a task_id")
+        return pool, tasks
+
+    def _run_pool(self, *, bundle_root: str, tasks: list, broker: str,
+                  capability: str) -> list:
+        """Run every task in the pool, at most ``TASK_CONCURRENCY`` at a time.
+
+        Bounded rather than unbounded: fifteen agent containers at once would contend for the
+        room's memory and CPU, and a contestant that happened to run while another pool was busy
+        would post a worse ``process_time`` for a reason that has nothing to do with its answer --
+        and ``process_time`` is what the performance reward and the timeout penalty are measured
+        against.
+
+        Results are returned in TASK ORDER regardless of completion order, so two contestants'
+        reports line up task for task.
+        """
+        import concurrent.futures
+
+        attempts: list = [None] * len(tasks)
+
+        def _one(index_and_task):
+            index, task = index_and_task
+            with tempfile.TemporaryDirectory() as workdir:
+                os.chmod(workdir, 0o777)
+                started = time.monotonic()
+                answer, stderr, timed_out, returncode, truncated = self._run_agent(
+                    bundle_root=bundle_root, workdir=workdir, task=task,
+                    broker=broker, capability=capability)
+            return index, {
+                "task_id": task.get("task_id"),
+                "answer": answer,
+                "stderr": stderr,
+                "timed_out": timed_out,
+                "returncode": returncode,
+                "truncated": truncated,
+                # What the room measured, not what the agent claimed. Upstream's performance reward
+                # and timeout penalty are both computed from it.
+                "process_time": round(time.monotonic() - started, 3),
+            }
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=TASK_CONCURRENCY) as pool_executor:
+            for index, attempt in pool_executor.map(_one, list(enumerate(tasks))):
+                attempts[index] = attempt
+        return attempts
 
     def _run_agent(self, *, bundle_root: str, workdir: str, task: dict,
                    broker: str, capability: str) -> tuple[str, str, bool, int, bool]:
@@ -258,8 +340,7 @@ class Sn22TeeProfile:
     def _fixture_result(*, job_id: str, bundle_sha256: str) -> TeeJobResult:
         """The no-docker plumbing stub: proves the room wiring without running an agent."""
         return TeeJobResult(
-            report={"schema_version": 1, "task_id": "fixture", "answer": "{}", "timed_out": False,
-                    "returncode": 0, "truncated": False, "stderr_tail": ""},
+            report={"schema_version": 1, "pool": "fixture", "tasks": [], "stderr_tail": ""},
             provenance={"profile": "sn22", "job_id": job_id, "bundle_sha256": bundle_sha256,
                         "fixture": True, "inference_funded_by": "miner"})
 
