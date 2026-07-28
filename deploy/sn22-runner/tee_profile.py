@@ -17,6 +17,7 @@ for *what it is asked*. Keeping the question lane-owned is what stops a paired c
 two different challenges run at two different moments.
 """
 
+import asyncio
 import json
 import os
 import subprocess
@@ -157,6 +158,11 @@ class Sn22TeeProfile:
             attempts = self._run_pool(
                 bundle_root=bundle_root, tasks=tasks, broker=broker_url(),
                 capability=capability)
+            # SCORING happens here, inside the room, while the evaluator capability is still live.
+            # It has to: the pool tuple is what the attestation binds, and a tuple computed on the
+            # host afterwards would be a number the quote does not cover.
+            pool_result, credentials = self._score(
+                pool=pool, tasks=tasks, attempts=attempts, job_id=job_id)
         finally:
             # Always, including on an exception: a capability that outlived its job would let a
             # slow agent keep spending the miner's money after it had been scored.
@@ -181,6 +187,10 @@ class Sn22TeeProfile:
             # would be scoring itself.
             "stderr_tail": "\n".join(
                 attempt["stderr"][-2000:] for attempt in attempts if attempt["stderr"])[-4000:],
+            # Upstream's own four numbers for this contestant in this pool. Bound into the quote,
+            # so the host verifies a score rather than recomputing one it would have to trust.
+            "pool_result": pool_result,
+            "credential_status": credentials,
         }
         provenance = {
             "profile": "sn22",
@@ -227,6 +237,53 @@ class Sn22TeeProfile:
             if not isinstance(task, dict) or not task.get("task_id"):
                 raise RuntimeError("every SN22 task must be an object carrying a task_id")
         return pool, tasks
+
+    def _score(self, *, pool: str, tasks: list, attempts: list, job_id: str) -> tuple:
+        """Score this contestant's pool with the REAL upstream validator, in the room.
+
+        The evaluator's three provider operations are invoked in-process with an evaluator
+        capability -- never over HTTP, and never reachable from the agent's. Verification is paid
+        for by the contestant's own credential, which is the funding rule: a contestant that cannot
+        fund the check of its own answers scores zero rather than going unchecked.
+
+        A pool with no name is a pre-epoch single task; it is run but not scored, because a pool
+        tuple for a pool of one would be a number nobody should aggregate.
+        """
+        if not pool:
+            return None, {}
+
+        from kata_sn22 import production_scorer
+        from kata_sn22.epoch_manifest import build_task_from_input
+
+        capability = self.evaluator_capability(job_id)
+        broker = self._broker
+
+        async def _judge(messages):
+            answer = broker.dispatch(capability, "chutes-score", {"messages": list(messages)})
+            return answer.get("content", "")
+
+        async def _fetch_pages(urls):
+            answer = broker.dispatch(capability, "web-page-fetch", {"urls": list(urls)})
+            return answer.get("pages", {})
+
+        async def _rescrape(tweet_ids):
+            answer = broker.dispatch(
+                capability, "tweet-rescrape", {"tweet_ids": [str(i) for i in tweet_ids]})
+            return answer.get("tweets", [])
+
+        typed_tasks = tuple(build_task_from_input(task) for task in tasks)
+        answers, process_times = {}, {}
+        for attempt in attempts:
+            answers[attempt["task_id"]] = _parse_answer(attempt["answer"])
+            process_times[(0, attempt["task_id"])] = attempt["process_time"]
+
+        score = asyncio.run(production_scorer.score_pool(
+            pool=pool, tasks=typed_tasks, king_answers=answers, challenger_answers={},
+            deep_task_ids=frozenset(
+                task["task_id"] for task in tasks if task.get("deep")),
+            judge=_judge, fetch_pages=_fetch_pages, rescrape_tweets=_rescrape,
+            process_times=process_times))
+        return score.king.as_dict(), score.credentials.as_dict()
 
     def _run_pool(self, *, bundle_root: str, tasks: list, broker: str,
                   capability: str) -> list:
@@ -343,6 +400,20 @@ class Sn22TeeProfile:
             report={"schema_version": 1, "pool": "fixture", "tasks": [], "stderr_tail": ""},
             provenance={"profile": "sn22", "job_id": job_id, "bundle_sha256": bundle_sha256,
                         "fixture": True, "inference_funded_by": "miner"})
+
+
+def _parse_answer(raw: str) -> dict:
+    """The agent's answer document, or an empty one.
+
+    An unparseable answer is not an error here: it is a contestant that produced nothing usable,
+    which upstream's own penalties are what score. Raising would turn a bad agent into a broken
+    room.
+    """
+    try:
+        document = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    return document if isinstance(document, dict) else {}
 
 
 def main() -> int:  # pragma: no cover - convenience for `python -m`

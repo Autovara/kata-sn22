@@ -249,6 +249,52 @@ class EpochManifest:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def build_task_from_input(document: dict):
+    """Rebuild a task from the descriptor an agent was given.
+
+    The room receives task descriptors over HTTP and has to score against the same objects the
+    manifest built. Rebuilding rather than trusting a serialised object is what keeps a room from
+    being handed a task with, say, a different ``max_execution_time`` from the one the agent was
+    actually held to -- the timeout penalty is measured against it.
+
+    ``deep`` is read here but never reaches an agent: it is carried in the pool JOB, alongside the
+    descriptor, not inside it.
+    """
+    if not isinstance(document, dict):
+        raise ManifestError("a task descriptor must be an object")
+    if document.get("protocol_version") != PROTOCOL_VERSION:
+        raise ManifestError(
+            f"task descriptor protocol_version {document.get('protocol_version')!r} is not "
+            f"{PROTOCOL_VERSION}")
+    limits_raw = document.get("limits") or {}
+    limits = Limits(**{name: limits_raw[name] for name in
+                       ("max_execution_time", "max_provider_calls", "max_tokens",
+                        "max_output_bytes") if name in limits_raw})
+
+    if document.get("search_type") == "x_search":
+        return XSearchTask(
+            task_id=str(document["task_id"]), query=str(document.get("query") or ""),
+            count=int(document.get("count") or RESULT_COUNT), sort=document.get("sort"),
+            user=document.get("user"), start_date=document.get("start_date"),
+            end_date=document.get("end_date"), lang=document.get("lang"),
+            limits=limits, deep=bool(document.get("deep")),
+            **{name: document[name] for name in
+               ("verified", "blue_verified", "is_quote", "is_video", "is_image",
+                "min_retweets", "min_replies", "min_likes") if name in document})
+    return AiSearchTask(
+        task_id=str(document["task_id"]), prompt=str(document.get("prompt") or ""),
+        mode=SearchMode(document.get("mode")),
+        result_type=ResultType(document.get("result_type")),
+        tools=tuple(document.get("tools") or ()),
+        count=int(document.get("count") or RESULT_COUNT),
+        system_message=str(document.get("system_message") or ""),
+        include_domains=tuple(document.get("include_domains") or ()),
+        exclude_domains=tuple(document.get("exclude_domains") or ()),
+        start_date=document.get("start_date"), end_date=document.get("end_date"),
+        date_filter_type=document.get("date_filter_type"),
+        limits=limits, deep=bool(document.get("deep")))
+
+
 def pool_of(task) -> str:
     if isinstance(task, XSearchTask):
         return "x_search"

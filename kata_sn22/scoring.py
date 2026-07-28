@@ -1,4 +1,14 @@
-"""The SN22 scoring schema and comparator (plan §5.3–§5.4, SN22-2).
+"""The SN22 scoring schema and comparator — **CALIBRATION ONLY. NOT THE PRODUCTION PATH.**
+
+Since Phase G a production duel is decided on ONE number: ``sn22_combined_score``, produced by the
+pinned upstream's own ``combine_pool_scores`` over both contestants' four pool tuples. See
+:mod:`kata_sn22.paired_scoring`.
+
+The seven-signal lexicographic comparator below is what this lane used before the real upstream
+scorer was executable, and it is what the local sandbox still ranks on while a miner iterates. It
+must not decide a promotion: its priority order and its indifference bands are Kata's, and using
+them would mean a King defended its crown on a ranking upstream never described.
+``tests/test_sn22_paired_scoring.py`` asserts that nothing here reaches the production decision.
 
 Two things live here, and the separation matters.
 
@@ -90,9 +100,11 @@ def upstream_commit() -> str:
     return UPSTREAM_COMMIT
 
 
-#: The published rank signals, in promotion priority order. ``higher`` says which direction wins.
-#: This tuple IS the contract: the comparator walks it in order, so reordering it changes
-#: promotions.
+#: The CALIBRATION rank signals, in priority order. ``higher`` says which direction wins.
+#:
+#: Production does not read this tuple. It ranks on ``kata_sn22.paired_scoring.RANK_SIGNAL``, a
+#: single upstream-derived score; these seven remain the sandbox's ordering and are published as
+#: diagnostics beside it.
 RANK_SIGNALS: tuple[tuple[str, bool], ...] = (
     ("sn22_valid_query_rate", True),
     ("sn22_weighted_quality", True),

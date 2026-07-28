@@ -11,10 +11,13 @@
     "the validator reserves only room runs and independently metered verification resources.",
     "A spend_usd cap is intentionally absent because these providers expose no hard per-request",
     "price ceiling here; pretending to enforce one would be weaker than enforcing billed units.",
-    "KATA_PROMOTE_MARGINS are the indifference bands a challenger must clear on each ranked signal.",
-    "They are SN22's because only SN22 knows what a meaningful difference is in its own units;",
-    "sn22_latency_seconds is a SUM over the round's tasks, so its margin scales with task_count and",
-    "the two must be recalibrated together."
+    "KATA_PROMOTE_MARGINS is GONE from the production path as of Phase G. It was the indifference",
+    "band for the seven-signal lexicographic comparator, which production no longer uses: a duel is",
+    "decided on one number, sn22_combined_score, produced by the pinned upstream's own",
+    "combine_pool_scores over both contestants' four pool tuples. A margin on that would be Kata",
+    "overriding upstream's own arithmetic about what counts as better. A tie keeps the King, and",
+    "strictly greater promotes. The value below is retained ONLY for the local calibration sandbox,",
+    "which still ranks on the seven signals until its scorer is replaced."
   ],
   "schema_version": 1,
   "subnet_id": 22,
