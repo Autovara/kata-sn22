@@ -571,16 +571,43 @@ def test_the_packaged_rows_ship_inside_the_installed_package():
     assert qp.meta_path("development").is_file()
 
 
-def test_no_production_pool_is_committed_yet():
-    """Recorded deliberately. Snapshotting it is an operator step -- it needs network access and
-    the rows are large -- and this asserts nobody has quietly committed a hand-made stand-in under
-    the production name.
+def test_the_committed_production_pool_is_a_real_upstream_snapshot():
+    """Replaces the earlier "no production pool yet" placeholder, now that one is committed.
 
-    When a real snapshot IS committed, this test should be replaced by one asserting its kind is
-    ``upstream-snapshot`` and that a full epoch builds from it.
+    Checks the thing that actually matters: it declares itself an ``upstream-snapshot`` (a
+    hand-made stand-in under the production name would be refused by kind), its digest verifies,
+    and every lane an epoch draws from is deep enough that rounds do not repeat questions.
     """
-    assert not qp.pool_path("production").exists(), \
-        "a production pool now exists; replace this test with one that builds an epoch from it"
+    if not qp.pool_path("production").exists():
+        pytest.skip("no production pool snapshotted in this checkout")
+
+    pool = qp.load_pool("production")            # raises if the digest does not verify
+    assert pool.kind == qp.KIND_UPSTREAM_SNAPSHOT
+    assert pool.upstream_commit
+
+    # 45 AI tasks and 15 X queries per round. A lane thinner than this repeats within one round,
+    # let alone across rounds.
+    assert len(pool.web()) >= 100, f"web lanes hold only {len(pool.web())} rows"
+    assert len(pool.lane("x")) >= 100, f"the x lane holds only {len(pool.lane('x'))} rows"
+
+
+def test_a_production_epoch_builds_from_the_committed_pool():
+    """The end of the operator's snapshot step: 60 tasks, four pools, three deep samples each, and
+    two rounds that do not ask the same questions."""
+    if not qp.pool_path("production").exists():
+        pytest.skip("no production pool snapshotted in this checkout")
+
+    pool = qp.load_pool("production")
+    first = em.build_epoch(seed="round-001", pool=pool, production=True)
+    second = em.build_epoch(seed="round-002", pool=pool, production=True)
+
+    assert len(first.tasks) == 60
+    assert len(first.deep_task_ids) == 12
+    assert first.as_document()["pool_digest"] == pool.digest
+
+    questions = {task.prompt for task in first.tasks if isinstance(task, AiSearchTask)}
+    later = {task.prompt for task in second.tasks if isinstance(task, AiSearchTask)}
+    assert not (questions & later), f"two rounds shared {len(questions & later)} questions"
 
 
 def test_two_rounds_draw_different_questions_from_the_pool():
