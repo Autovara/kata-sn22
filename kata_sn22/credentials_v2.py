@@ -34,6 +34,7 @@ import json
 import re
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import PurePosixPath
 
 #: Bumped when the sealed payload's shape changes. A v1 payload must never parse as v2: v1 sealed a
 #: single key for SN60, and reading it as "one of four provided" would start a round that cannot
@@ -232,26 +233,59 @@ def bundle_binding_matches(credential_set: CredentialSet, bundle_sha256: str) ->
     return hmac.compare_digest(credential_set.bundle_binding, (bundle_sha256 or "").lower())
 
 
+#: The bundle file holding the ciphertext. Excluded from its own binding.
+SEALED_FILENAME = "sealed_inference_key"
+
+#: Generated caches and VCS metadata. Subnet packers do not transmit them, and they must not make a
+#: valid credential fail merely because a miner ran their agent locally before sealing.
+_TRANSIENT_DIRS = frozenset({".git", "__pycache__"})
+_TRANSIENT_SUFFIXES = frozenset({".pyc", ".pyo"})
+
+#: Domain separator. This value, the field framing below and the exclusion rules are all fixed by
+#: ``kata-tee-runner``'s ``room/bundle.py``, which is the deployed implementation and therefore the
+#: authoritative one. THIS FUNCTION MUST PRODUCE THE SAME DIGEST, BYTE FOR BYTE.
+#:
+#: It did not, when first written. The two constructions were each internally sensible and had
+#: passing tests, and the disagreement would not have surfaced until a real miner's sealed
+#: credential met a real room -- where every SN22 submission would have been rejected as "not bound
+#: to this candidate bundle", with nothing in either repository's test output to explain why.
+#: ``tests/test_sn22_bundle_binding_parity.py`` pins them together with a shared vector.
+_BUNDLE_BINDING_DOMAIN = b"kata-miner-credential-bundle-v1\0"
+
+
+def _excluded_from_binding(relative_path: str) -> bool:
+    path = PurePosixPath(relative_path)
+    return (
+        relative_path == SEALED_FILENAME
+        or path.suffix in _TRANSIENT_SUFFIXES
+        or any(part in _TRANSIENT_DIRS for part in path.parts)
+    )
+
+
 def compute_bundle_binding(files: dict) -> str:
     """The binding a miner seals: SHA-256 over every bundle file except the ciphertext itself.
 
-    ``files`` maps a bundle-relative path to its bytes. The ciphertext is excluded because it cannot
-    commit to itself; everything else is included, so editing ``agent.py``, a helper or a manifest
-    invalidates the seal and forces a reseal. That is the point -- a credential bound to code the
-    miner has since changed is a credential paying for code nobody reviewed.
+    ``files`` maps a bundle-relative POSIX path to its bytes. The ciphertext is excluded because it
+    cannot commit to itself; everything else is included, so editing ``agent.py``, a helper or a
+    manifest invalidates the seal and forces a reseal. That is the point -- a credential bound to
+    code the miner has since changed is a credential paying for code nobody reviewed.
+
+    Every detail is dictated by the room's implementation, including the ordering: the room walks a
+    filesystem and sorts ``Path`` objects, which orders by path *parts*, not by the joined string.
+    Those differ -- ``a/b`` sorts before ``a-b`` by parts and after it by string -- so a bundle with
+    both a nested and a dash-named file would otherwise hash differently in the two repositories.
     """
-    digest = hashlib.sha256()
-    for path in sorted(files):
-        if path == SEALED_FILENAME:
+    digest = hashlib.sha256(_BUNDLE_BINDING_DOMAIN)
+    for relative in sorted(files, key=lambda name: PurePosixPath(name).parts):
+        if _excluded_from_binding(relative):
             continue
-        digest.update(path.encode("utf-8"))
-        digest.update(b"\x00")
-        digest.update(hashlib.sha256(files[path]).digest())
+        encoded_path = relative.encode("utf-8")
+        content = files[relative]
+        digest.update(len(encoded_path).to_bytes(4, "big"))
+        digest.update(encoded_path)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
     return digest.hexdigest()
-
-
-#: The bundle file holding the ciphertext. Excluded from its own binding.
-SEALED_FILENAME = "sealed_inference_key"
 
 
 @dataclass(frozen=True)
