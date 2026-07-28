@@ -1,105 +1,161 @@
 # kata-sn22
 
 The **SN22 (Desearch)** subnet plugin for the [Kata](../kata) competition platform: a paired
-king-versus-challenger search-quality lane whose scoring components are a proven port of a pinned
-upstream commit.
+king-versus-challenger search lane that scores with the **real pinned upstream validator**, executed.
 
-See `../KATA-ARCHITECTURE.md` §6.3 for how this lane validates and scores, and
-`../historical/KATA-SN22-ACTIVATION-PLAN.md` for the phase gates it was built against (partly
-superseded: the sealed corpus and the separate submissions repository are both gone).
+Two facts do most of the explaining, and everything else follows from them.
 
-## What SN22 (Desearch) is
+**The miner funds its own evaluation.** Every paid SN22 call — the agent's web search, its X search,
+its final summary, and the evaluator's page fetches, tweet re-scrapes and judge calls — is made
+inside a sealed room with credentials the *contestant* sealed to its own bundle. The validator holds
+no paid SN22 credential at all, so there is no fallback: a contestant that cannot fund its own
+evaluation scores **zero**. The reigning King keeps paying to defend its crown.
 
-Desearch is a search-quality subnet. An agent is given a query and answers it by retrieving from the
-web and X, and its answer is scored on how relevant and complete the results are. Upstream scores a
-whole population of miners against the live web every hour. Kata does something narrower and
-therefore fairer to reason about: two agents, one committed challenge and the same secret queries.
-Both search live sources; the validator independently fetches and verifies their evidence against
-the same per-round cache.
+**The scorer is upstream's, not ours.** `AdvancedScraperValidator`, `XScraperValidator`,
+`compute_rewards_and_penalties`, `QueryScheduler._score_one_type` and `combine_pool_scores` are the
+vendored files at the pinned commit, run as-is. Kata supplies the questions, the two contestants and
+the transports; it computes no score of its own.
+
+## Reading order
+
+| Start here | For |
+|---|---|
+| [`kata/docs/SN22-PROTOCOL.md`](../kata/docs/SN22-PROTOCOL.md) | writing a submission |
+| [`SN22-OPERATOR-GUIDE.md`](SN22-OPERATOR-GUIDE.md) | running the lane |
+| [`docs/DECISION-bittensor-not-in-the-room.md`](docs/DECISION-bittensor-not-in-the-room.md) | why the images contain what they contain |
+| `../KATA-ARCHITECTURE.md` §6.3 | how this lane fits the platform |
+
+## What a round is
+
+One **epoch**: 60 tasks per contestant, 15 in each of four pools.
+
+| Pool | Tools | Share | Serving budget |
+|---|---|---|---|
+| `ai_search:fast` | Web Search | 0.54 | 15s |
+| `ai_search:balanced` | 50/50 Web / Twitter | 0.18 | 15s |
+| `ai_search:deep` | 50/50 Web / Twitter | 0.18 | 30s |
+| `x_search` | Basic X search | 0.10 | 15s |
+
+**15 is not a preference.** Upstream deep-scores 20% of a pool and *drops* a contestant with fewer
+than three deep samples, so 15 is the smallest pool that can be scored at all. The lane refuses any
+other task count in production rather than rounding it up.
+
+Both contestants receive the same manifest, including the same deep-sample ids. The agent is never
+told which those are — one that knew would work hardest on exactly those, and the 20% sample would
+stop measuring the other 80%.
+
+The duel runs as **eight attested pool jobs**: four per contestant, one contestant's four before the
+other's, in a deterministic randomised order. Sixty tasks behind one request is one timeout away
+from losing every answer already paid for.
+
+## How a promotion is decided
+
+One number: **`sn22_combined_score`**, from upstream's own `combine_pool_scores` over both
+contestants' four pool tuples. Higher wins; a tie keeps the King.
+
+There are no tie-breakers, no indifference bands and no seven-signal ordering. Those were
+calibration machinery — see the banner at the top of `kata_sn22/scoring.py`, which is still what the
+local sandbox ranks on while a miner iterates, and which cannot decide a promotion.
+
+`combine_pool_scores` normalises each pool across **both** contestants, so the call is made once
+with both. Scoring each side alone would give each of them nearly the pool's full share and the
+comparison would collapse.
+
+## Failure, and what each kind means
+
+| What happened | Outcome |
+|---|---|
+| A contestant's own credential is missing, invalid, unauthorized, out of credit, rate-limited or expired | That contestant scores **zero**. The duel still decides. |
+| Timeout, malformed output, bad schema, too few results, duplicates | Upstream's own penalties apply. Not automatically zero. |
+| Quote verification fails, a room is unreachable, a provider has a confirmed outage, a report is missing | The whole duel **defers**. Nothing is promoted. |
+
+The distinction is the point: a zeroed contestant cannot be un-zeroed, while a deferred duel can be
+re-run. Anything ambiguous defers.
+
+A room that cannot run a contestant returns a **quote-bound `credential_failure` report**, not an
+HTTP error. A plain 4xx is not evidence — it could come from anywhere on the path, including a host
+that would rather one side lost.
 
 ## Layout
 
 ```
 kata_sn22/
-  protocol.py            the versioned submission contract: task/output schema, limits, errors
-  manifests.py           query and usage commitments plus the benchmark identity
-  scoring.py             the seven ordered rank signals and the promotion comparator
-  upstream_adapter.py    the dependency-free port of the pinned upstream scoring components
-  upstream_snapshot.py   identity and integrity of the vendored upstream tree
-  parity.py              the parity contract: components, recorded cases, evidence checks
-  parity_expectations.json   what the REAL upstream computed, recorded by a reviewer
-  gateway.py             the recorded-canary/local relay: capabilities, quotas, signed receipts
-  sandbox.py             the candidate execution jail (bwrap, no network, constructed environment)
-  providers.py           live validator-owned page, judge, and tweet verification transports
+  protocol_v2.py         the version-2 task/answer contract and the scoring surface
+  epoch_manifest.py      the 60-task epoch: upstream's distribution, Kata's deep samples
+  question_pool.py       packaged question rows, and the refusal when they are not real
+  scorer_policy.py       every input that decides what a score MEANS, hashed into one identity
+  upstream_runtime.py    load the pinned upstream with INFRASTRUCTURE adapted and nothing else
+  neuron_adapter.py      the seven-attribute surface upstream reads off a validator
+  production_scorer.py   the winner path: real validators, real aggregation, one pool tuple
+  paired_scoring.py      eight attested reports in, one promotion decision out
+  production_challenge.py  splits an epoch into eight pool jobs and runs the duel
+  broker_ops.py          the six reviewed provider operations and their FIXED routes
+  credentials_v2.py      the four-provider sealed set and the agent/evaluator split
+  report_v2.py           what a sealed room says, and how the host refuses a mismatched duel
   execution/tee_room.py  remote room client and TDX attestation verification
-  fixtures.py            the fixed weak/medium/strong/invalid/malicious reference submissions
-  plugin.py              the SubnetPlugin implementation
+  scoring.py             CALIBRATION ONLY: the old seven signals, for the local sandbox
+  upstream_adapter.py    the dependency-free port -- now test/reference evidence, not the winner
+kata_sn22_sdk/           what a SUBMISSION imports. Standard library only, no credentials.
 upstream/                the complete pinned upstream tree + UPSTREAM_MANIFEST.json
+deploy/sn22-agent/       the container one submission runs in
+deploy/sn22-runner/      the trusted runner: room server + SN22 profile + the real scorer
 tools/
+  snapshot_questions.py  operator-run, once: capture the upstream question rows
   vendor_upstream.py     regenerate or verify the upstream manifest
-  upstream_shim.py       import the pinned upstream with its infrastructure stubbed (dev only)
   record_parity.py       execute the pinned upstream and record what it computes
 ```
 
-## Three properties worth knowing before reading the code
+## Two images, and why they differ
 
-- **A challenge is committed.** Queries are drawn deterministically from a versioned pool and hashed
-  into the benchmark identity with the judge policy, model, upstream commit and plugin revision.
-  The web is deliberately not frozen; fairness comes from validator-owned verification and a page
-  cache shared by both contestants.
-- **No ranked signal trusts the candidate.** Cost comes from the attested in-room gateway summary
-  and latency from the validator's clock. A citation counts only if the validator fetched the page,
-  its claimed excerpts really appear there, and the agent actually returned it.
-- **Promotion is lexicographic, not a weighted sum.** Validity, then quality, then citation
-  precision, coverage, invalid runs, cost, latency. A weighted sum would let a candidate buy a
-  quality win with unlimited spend.
+| | Agent image | Trusted runner |
+|---|---|---|
+| Runs | the miner's `agent.py` | the room server and the real scorer |
+| Carries | Python, `kata_sn22_sdk`, the harness | the lane package, the pinned upstream tree |
+| Third-party packages | **none** | `pydantic`, `numpy`, `pytz`, `tiktoken` — and nothing else |
+| Package installer | **removed at build time** | present |
+| Credentials | **none, and no way to ask for one** | the contestant's four, in memory only |
 
-## The upstream parity gate (SN22-5)
+The agent image has `pip`, `apt`, `curl`, `wget` and `ensurepip` deleted, and the build fails if any
+survive. An untrusted agent with a package manager is one network path away from running code that
+was never reviewed — and the attested measurement would still be the approved one.
 
-`sn22_weighted_quality` is not a Kata-shaped approximation of the upstream score — it *is* the
-upstream reward: the AI content/summary split, the ONLY_LINKS reweighting, the component floors, the
-applicable penalties and the pool shares. That claim is earned rather than asserted:
+The four packages in the runner are there because upstream's own scoring semantics depend on them:
+`pydantic` validates the protocol models, `numpy` *is* the arithmetic, `pytz` decides what "within
+date range" means, and `tiktoken` counts the tokens the streaming penalty charges for. Everything
+else upstream imports — `bittensor`, `wandb`, `aiohttp`, the provider SDKs — is infrastructure and is
+replaced. See `docs/DECISION-bittensor-not-in-the-room.md`.
 
-- `upstream/` holds the complete tree at `bea9712f58a5fc01c57ec441ce279499529d8bf6`, produced by
-  `git archive` and pinned by a manifest of 195 per-file digests plus one tree digest.
-- `kata_sn22/upstream_adapter.py` is a **dependency-free port**. The lane runtime carries no
-  `bittensor`, no `pydantic`, no HTTP client.
-- `tools/record_parity.py` imports the **real** upstream under a stub shim and runs it over 18
-  recorded response cases and 48 scalar probes. Every one of the nine adapted penalties fires in at
-  least one case and rests in another.
-- `kata_sn22/parity.py` checks the adapter against that recording, and checks the recording still
-  describes the tree on disk. **Change one upstream byte and the tree digest moves, so the evidence
-  no longer matches the code it claims to come from** — which is the SN22-5 exit gate.
-
-One component is pinned by source digest but not executed: the reward-combination arithmetic in
-`base_scraper_validator.compute_rewards_and_penalties`, because upstream's method is a live
-validator step that logs to W&B and writes a metagraph-sized array. Every input it combines *is*
-executed. The parity report says so rather than leaving a reader to find out.
-
-Two upstream components are deliberately excluded from the Kata quality signal, and the challenge
-result declares it: `timeout_penalty` and `min_realistic_time_penalty` would double-count provider
-latency because Kata already ranks validator-observed latency as its own signal.
+## Testing locally, with no provider and no room
 
 ```bash
-uv run pytest                                        # everything except the executed-parity half
-uv sync --extra parity                               # adds pydantic/pytz/numpy for the harness
-uv run --extra parity pytest                         # ...including the live upstream comparison
-uv run --extra parity python tools/record_parity.py --check   # evidence == a fresh recording?
-uv run python tools/vendor_upstream.py verify        # tree still matches its manifest?
+uv sync --extra dev --extra upstream
+uv run pytest -q
 ```
 
-Re-vendoring at a newer upstream commit is a reviewed act, not a build step: `git archive` the new
-commit into `upstream/`, run `tools/vendor_upstream.py write`, re-record parity, and **read the
-diff**. A changed number there is an upstream behaviour change and has to be understood before the
-adapter is taught to agree with it.
+The suite runs offline. Provider calls are faked at the transport, the room is injected, and the
+question pool is a labelled `development` one that production refuses by kind.
 
-## Credential and execution boundary
+To run the tests that exercise the real vendored upstream you need the `upstream` extra above;
+without it those modules skip rather than silently falling back to the port — a version of them that
+"passed" against the port would be testing the thing this lane exists to stop using.
 
-Production uses `KATA_SN22_EXECUTION_BACKEND=tee` (the safe default). The validator sends the exact
-bundle and one task to `KATA_SN22_ROOM_URL`; it accepts the answer only after `dcap-qvl` verifies a
-TDX quote, the image measurement is in `KATA_SN22_ROOM_MEASUREMENTS`, and the quote binds the nonce,
-task, bundle hash, answer and provenance. The miner's provider credential is sealed to that bundle
-and decrypted only in the room.
+To exercise the real agent image:
 
-The explicit `sandbox` backend is only for the recorded, free canary. It runs under `bwrap` as uid
-65534 with no network namespace and a constructed environment. It is never a production fallback.
+```bash
+cd deploy/sn22-agent
+PYTHON_BASE=python@sha256:<digest> IMAGE=kata-sn22-agent:local ./build.sh local
+KATA_SN22_AGENT_IMAGE=kata-sn22-agent:local uv run pytest tests/test_sn22_agent_image.py
+```
+
+## Before this lane can run a production round
+
+`kata_sn22/datasets/` ships only the labelled `development` question rows, and a production epoch
+refuses them by kind. Capture the real ones once, on a machine with network:
+
+```bash
+uv run --extra snapshot python tools/snapshot_questions.py --out production
+git add kata_sn22/datasets/production.jsonl kata_sn22/datasets/production.meta.json
+```
+
+Every manifest records that pool's SHA-256, so "what were the two contestants asked" has an answer
+that does not depend on when you look. Re-snapshot only deliberately.
