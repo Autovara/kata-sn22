@@ -233,3 +233,28 @@ def test_the_room_profile_refuses_a_mutable_image_tag():
         finally:
             sys.path.remove(str(profile_dir))
             sys.modules.pop("tee_profile", None)
+
+
+# ---- preflight matches the funding model ---
+
+def test_preflight_requires_no_validator_provider_credential(monkeypatch):
+    """It used to require three, and that was left behind when the funding inverted.
+
+    A correctly configured lane has no provider key anywhere by design, so the old check failed it
+    with three errors telling the operator to add exactly the credentials that must not exist.
+    """
+    from kata_sn22.plugin import Sn22DesearchPlugin
+
+    for name in ("SCRAPINGDOG_API_KEY", "APIFY_API_KEY", "OPENAI_API_KEY", "CHUTES_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(execution_policy.EXECUTION_BACKEND_ENV, "tee")
+    monkeypatch.setenv("KATA_SN22_VERIFICATION_MODE", "live")
+    monkeypatch.delenv(ROOM_ENDPOINT_ENV, raising=False)
+
+    issues = Sn22DesearchPlugin().preflight()
+    messages = " ".join(issue["message"] for issue in issues)
+
+    for name in ("SCRAPINGDOG_API_KEY", "APIFY_API_KEY", "OPENAI_API_KEY"):
+        assert name not in messages, f"preflight still asks the operator for {name}"
+    # ...and it still catches what IS the operator's to supply.
+    assert ROOM_ENDPOINT_ENV in messages

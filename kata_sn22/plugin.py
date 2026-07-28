@@ -724,8 +724,6 @@ class Sn22DesearchPlugin(SubnetPlugin):
             validate_room_url,
             verify_room_identity,
         )
-        from kata_sn22.providers import APIFY_KEY_ENV, OPENAI_KEY_ENV, SCRAPINGDOG_KEY_ENV
-
         issues: list[dict[str, str]] = []
         verification_mode = os.environ.get(
             "KATA_SN22_VERIFICATION_MODE", "live").strip().lower()
@@ -734,13 +732,16 @@ class Sn22DesearchPlugin(SubnetPlugin):
                 "level": "error",
                 "message": "KATA_SN22_VERIFICATION_MODE must be 'live' or 'recorded'.",
             })
-        if verification_mode == "live":
-            for name in (SCRAPINGDOG_KEY_ENV, APIFY_KEY_ENV, OPENAI_KEY_ENV):
-                if not os.environ.get(name, "").strip():
-                    issues.append({
-                        "level": "error",
-                        "message": f"{name} is required for independent SN22 result verification.",
-                    })
+        # NOTE: live verification deliberately requires NO validator provider credential.
+        #
+        # This check used to demand SCRAPINGDOG_API_KEY, APIFY_API_KEY and OPENAI_API_KEY, because
+        # the validator once paid for its own page fetches, tweet re-scrapes and judging. Under the
+        # miner-funded rule it pays for none of them: every one of those calls happens inside the
+        # sealed room, with the four keys the CONTESTANT sealed to its bundle.
+        #
+        # Leaving the requirement in place was worse than useless -- a correctly configured lane,
+        # with no provider keys anywhere by design, would fail preflight with three errors telling
+        # the operator to add exactly the credentials that must not exist.
         try:
             backend = self.environment_spec().execution
         except ValueError as exc:
