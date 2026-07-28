@@ -163,6 +163,28 @@ class ScorerPolicy:
                                ensure_ascii=False)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+    def as_route_document(self) -> dict:
+        """The routing subset of the policy: WHICH provider produced the evidence a score is made
+        of, as opposed to WHAT the score means.
+
+        These fields are already inside :meth:`as_document`, so a change to a route moves the
+        scorer hash too. The reason they are also hashed alone is that the two answer different
+        operator questions and change on different schedules: swapping the tweet actor is a routing
+        decision that should not read, to whoever is diffing two deployments, like the rubric
+        changed. An operator declares both, and a lane that cannot reproduce either refuses to run.
+        """
+        return {
+            "schema_version": POLICY_SCHEMA_VERSION,
+            "provider_routes": dict(sorted(self.provider_routes.items())),
+            "apify_tweet_actor": self.apify_tweet_actor,
+        }
+
+    def route_policy_hash(self) -> str:
+        """The identity of the provider routes the scores were produced through."""
+        canonical = json.dumps(self.as_route_document(), sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=False)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 #: The one policy production runs under.
 PRODUCTION_POLICY = ScorerPolicy()
@@ -170,6 +192,10 @@ PRODUCTION_POLICY = ScorerPolicy()
 
 def policy_hash() -> str:
     return PRODUCTION_POLICY.policy_hash()
+
+
+def route_policy_hash() -> str:
+    return PRODUCTION_POLICY.route_policy_hash()
 
 
 def minimum_tasks_per_pool() -> int:

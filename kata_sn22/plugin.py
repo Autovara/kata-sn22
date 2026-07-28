@@ -1064,6 +1064,49 @@ class Sn22DesearchPlugin(SubnetPlugin):
             verify_room_identity(room_url, policy=policy, verifier=DcapQvlVerifier())
         except RuntimeError as exc:
             issues.append({"level": "error", "message": str(exc)})
+        issues.extend(self._declared_policy_issues())
+        return issues
+
+    #: The two policy identities an operator declares at install time, and the function each must
+    #: reproduce. ``installer/lane_settings.py`` REQUIRES both and validates their shape; this is
+    #: what makes them mean something. A required value nothing reads is a value that can be wrong
+    #: for as long as nobody looks -- and the thing it would be wrong about is what a score means.
+    _DECLARED_POLICY_ENV: tuple[tuple[str, str], ...] = (
+        ("KATA_SN22_SCORER_POLICY_HASH", "policy_hash"),
+        ("KATA_SN22_ROUTE_POLICY_HASH", "route_policy_hash"),
+    )
+
+    def _declared_policy_issues(self) -> list[dict[str, str]]:
+        """The operator's declared scoring identity must be the one this checkout computes.
+
+        A mismatch means the installed plugin is not the one whose policy was reviewed and
+        approved. That is a refusal rather than a warning: the alternative is scoring a paid duel
+        under a policy nobody signed off on, and publishing the result as though they had.
+        """
+        from kata_sn22 import scorer_policy
+
+        issues: list[dict[str, str]] = []
+        for name, attribute in self._DECLARED_POLICY_ENV:
+            declared = os.environ.get(name, "").strip()
+            if not declared:
+                issues.append({
+                    "level": "error",
+                    "message": (
+                        f"{name} is required for the SN22 TEE backend. Compute it with "
+                        f"`python -c 'from kata_sn22.scorer_policy import {attribute}; "
+                        f"print({attribute}())'`."
+                    ),
+                })
+                continue
+            computed = getattr(scorer_policy, attribute)()
+            if declared != computed:
+                issues.append({
+                    "level": "error",
+                    "message": (
+                        f"{name} declares {declared}, but this checkout computes {computed}. The "
+                        f"installed plugin is not the one whose policy was approved."
+                    ),
+                })
         return issues
 
     # ---- cost ------------------------------------------------------------------------------------

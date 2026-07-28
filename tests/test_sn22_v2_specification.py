@@ -492,3 +492,125 @@ def test_a_comparable_duel_passes():
     # The BUNDLES differ -- that is the duel. Everything about the grading matches.
     rep.duel_is_comparable(king, challenger)
     assert len(king.pool_results()) == 4
+
+
+# ---- GATE: the operator-declared policy identity is real on both sides ---
+#
+# `installer/lane_settings.py` REQUIRES five operator values before an SN22 lane may install, two of
+# which are policy hashes. It shape-validates them and stops. For one release the other side did not
+# exist: no function computed a route hash, and nothing anywhere read either value -- so the
+# installer demanded a number that could not be produced and would never have been checked. The
+# lane would have installed against whatever 64 hex characters an operator typed.
+#
+# That is the same shape as the bundle-binding defect: two components each correct alone, never run
+# against each other. These tests are the pairing.
+
+def test_the_route_policy_hash_is_stable_and_distinct_from_the_scorer_hash():
+    """Distinct because they answer different questions -- what a score MEANS versus which
+    provider produced the evidence. Equal hashes would make a route change unreadable in a
+    deployment diff."""
+    assert policy.route_policy_hash() == policy.ScorerPolicy().route_policy_hash()
+    assert policy.route_policy_hash() != policy.policy_hash()
+
+
+def test_changing_a_provider_route_moves_both_hashes():
+    import dataclasses
+
+    routes = dict(policy.PRODUCTION_POLICY.provider_routes)
+    routes[sorted(routes)[0]] = "https://example.invalid/moved"
+    changed = dataclasses.replace(policy.PRODUCTION_POLICY, provider_routes=routes)
+    assert changed.route_policy_hash() != policy.route_policy_hash()
+    assert changed.policy_hash() != policy.policy_hash()
+
+
+def test_changing_the_tweet_actor_moves_the_route_hash():
+    import dataclasses
+
+    changed = dataclasses.replace(policy.PRODUCTION_POLICY, apify_tweet_actor="other/actor")
+    assert changed.route_policy_hash() != policy.route_policy_hash()
+
+
+def test_a_rubric_change_moves_the_scorer_hash_but_not_the_route_hash():
+    import dataclasses
+
+    changed = dataclasses.replace(policy.PRODUCTION_POLICY, quality_exponent=0.5)
+    assert changed.policy_hash() != policy.policy_hash()
+    assert changed.route_policy_hash() == policy.route_policy_hash()
+
+
+@pytest.mark.parametrize("name,attribute", [
+    ("KATA_SN22_SCORER_POLICY_HASH", "policy_hash"),
+    ("KATA_SN22_ROUTE_POLICY_HASH", "route_policy_hash"),
+])
+def test_preflight_refuses_a_missing_declared_policy_hash(monkeypatch, name, attribute):
+    from kata_sn22 import SN22_DESEARCH_PLUGIN as plugin
+
+    for env_name, env_attribute in plugin._DECLARED_POLICY_ENV:
+        monkeypatch.setenv(env_name, getattr(policy, env_attribute)())
+    monkeypatch.delenv(name, raising=False)
+    messages = [issue["message"] for issue in plugin._declared_policy_issues()]
+    assert any(name in message and "required" in message for message in messages), messages
+
+
+@pytest.mark.parametrize("name,attribute", [
+    ("KATA_SN22_SCORER_POLICY_HASH", "policy_hash"),
+    ("KATA_SN22_ROUTE_POLICY_HASH", "route_policy_hash"),
+])
+def test_preflight_refuses_a_declared_hash_this_checkout_cannot_reproduce(
+        monkeypatch, name, attribute):
+    """The installed plugin not being the reviewed one is a refusal, not a warning: the alternative
+    is a paid duel scored under a policy nobody approved and published as though they had."""
+    from kata_sn22 import SN22_DESEARCH_PLUGIN as plugin
+
+    for env_name, env_attribute in plugin._DECLARED_POLICY_ENV:
+        monkeypatch.setenv(env_name, getattr(policy, env_attribute)())
+    monkeypatch.setenv(name, "0" * 64)
+    messages = [issue["message"] for issue in plugin._declared_policy_issues()]
+    assert any(name in message and "approved" in message for message in messages), messages
+
+
+def test_preflight_accepts_the_hashes_this_checkout_computes(monkeypatch):
+    """Without this the two tests above would pass on a function that refused everything."""
+    from kata_sn22 import SN22_DESEARCH_PLUGIN as plugin
+
+    for name, attribute in plugin._DECLARED_POLICY_ENV:
+        monkeypatch.setenv(name, getattr(policy, attribute)())
+    assert plugin._declared_policy_issues() == []
+
+
+def test_every_operator_value_the_installer_requires_is_produced_or_supplied():
+    """The installer and this repository must agree on what an operator has to declare.
+
+    A required value with no producer is one an operator cannot compute correctly; a required value
+    with no consumer is one that can be wrong indefinitely. Both were true here.
+    """
+    settings = Path(__file__).resolve().parents[2] / "kata-subnets-deploy" / "installer" \
+        / "lane_settings.py"
+    if not settings.is_file():
+        pytest.skip("kata-subnets-deploy is not checked out beside this repository")
+
+    # Read the installer's requirement by AST rather than restating it, so this test cannot drift
+    # into asserting a list that is no longer the one the installer enforces.
+    required: set[str] = set()
+    tree = ast.parse(settings.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AnnAssign) or getattr(node.target, "id", "") \
+                != "REQUIRED_OPERATOR_ENV":
+            continue
+        for key, value in zip(node.value.keys, node.value.values):
+            if key.value == 22:
+                required = {element.value for element in value.elts}
+    assert required, "REQUIRED_OPERATOR_ENV[22] was not found in the installer"
+
+    from kata_sn22 import SN22_DESEARCH_PLUGIN as plugin
+
+    checked = {name for name, _ in plugin._DECLARED_POLICY_ENV}
+    # The three that are not policy hashes are operator INPUTS -- an image digest and a room
+    # measurement are facts about a deployment, not values this checkout can compute.
+    deployment_facts = {"KATA_SN22_TEE_AGENT_IMAGE", "KATA_SN22_TEE_RUNNER_IMAGE",
+                        "KATA_SN22_ROOM_MEASUREMENT"}
+    unaccounted = required - checked - deployment_facts
+    assert not unaccounted, (
+        f"the installer requires {sorted(unaccounted)}, which this repository neither computes "
+        f"nor consumes -- an operator cannot supply a correct value, and nothing would notice a "
+        f"wrong one")
