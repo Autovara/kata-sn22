@@ -275,12 +275,14 @@ def test_the_client_carries_no_provider_credential(tmp_path):
 
 # ---- end to end--------------------------------------------------------------------------------
 
-REFERENCE_AGENT = (Path(__file__).resolve().parents[2] / "kata-sn22-submissions" / "submissions"
+#: Miners submit to the ONE competition repo, under their subnet's tree. There is no separate
+#: per-subnet submissions repository any more.
+REFERENCE_AGENT = (Path(__file__).resolve().parents[2] / "kata" / "submissions"
                    / "sn22__desearch" / "miner" / "example-20260727-01")
 
 
 @pytest.mark.skipif(not REFERENCE_AGENT.is_dir(),
-                    reason="the competition repository is not checked out beside this one")
+                    reason="the kata competition repository is not checked out beside this one")
 def test_the_reference_submission_scores_through_the_real_relay(tmp_path):
     """The shipped reference agent, run by the plugin, against the real gateway and socket.
 
