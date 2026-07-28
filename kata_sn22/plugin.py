@@ -586,27 +586,54 @@ class Sn22DesearchPlugin(SubnetPlugin):
         }
 
     def challenge_result_json(self, result) -> dict:
-        """Publish the ordered rank signals, in priority order, with their directions.
+        """Publish SN22's own verdict in the shape the platform reads it in.
 
-        The order is the contract, so it is serialized explicitly rather than left to dict ordering:
-        a consumer must be able to see WHY one contestant outranked the other, not just that it did.
+        The SCORING is entirely SN22's -- its tasks, its judge, its signals, its priority order. It
+        is not shared with, derived from, or comparable to any other subnet's. What is shared is the
+        *envelope*: the platform has to find out who won in order to merge the PR and crown a king,
+        and it reads every lane the same way, by name.
+
+        So each card carries its signals twice, identically valued:
+
+        - ``signals``   -- ``direction``/``priority``, human-facing and read by the canary.
+        - ``rank_signals`` -- ``higher_better``, the platform's promotion contract.
+
+        and the contestants appear both as ``challenger`` (the best one, for display) and in
+        ``entries`` keyed by ``submission_id`` (how the platform finds the PR it is deciding). The
+        duplication is deliberate: dropping either spelling silently breaks a real consumer, and the
+        two can never disagree because both are generated here from the same ``RANK_SIGNALS`` tuple.
         """
-        def _card(card) -> dict | None:
-            if card is None:
+        def _card(variant) -> dict | None:
+            if variant is None:
                 return None
+            card = variant.card
             signals = card.payload
+            values = [(name, higher, getattr(signals, name)) for name, higher in RANK_SIGNALS]
             return {
+                "submission_id": variant.label,
+                "artifact_hash": self.hash_bundle(Path(variant.agent_path)),
                 "comparable": card.comparable,
                 "passed": card.passed,
                 "isolated": bool((getattr(card, "metrics", None) or {}).get("isolated", False)),
                 "signals": [
-                    {"name": name, "value": getattr(signals, name),
+                    {"name": name, "value": value,
                      "direction": "higher_is_better" if higher else "lower_is_better",
                      "priority": index}
-                    for index, (name, higher) in enumerate(RANK_SIGNALS, start=1)
+                    for index, (name, higher, value) in enumerate(values, start=1)
+                ],
+                "rank_signals": [
+                    {"name": name, "value": value, "higher_better": higher}
+                    for name, higher, value in values
                 ],
                 "detail": signals.detail,
             }
+
+        outcome = getattr(result, "outcome", None)
+        king_variant = getattr(outcome, "king", None)
+        ranked = list(getattr(outcome, "ranked", None) or ())
+        entries = [entry for entry in (_card(variant) for variant in ranked) if entry is not None]
+        king = _card(king_variant)
+        cards = [card for card in (king, *entries) if card is not None]
 
         return {
             "schema_version": 1,
@@ -616,19 +643,15 @@ class Sn22DesearchPlugin(SubnetPlugin):
             "plugin_revision": PLUGIN_REVISION,
             "judge_policy_id": JUDGE_POLICY_ID,
             "upstream_commit": UPSTREAM_COMMIT,
-            "benchmark_identity": getattr(result, "benchmark_identity", ""),
+            "benchmark_identity": getattr(outcome, "benchmark_identity", "")
+            or getattr(result, "benchmark_identity", ""),
             "challenge_id": getattr(result, "challenge_id", "") or getattr(result, "run_id", ""),
-            "king": _card(getattr(result, "king_card", None)),
-            "challenger": _card(getattr(result, "candidate_card", None)),
+            "king": king,
+            "challenger": entries[0] if entries else None,
+            "entries": entries,
             # BOTH sides, or the challenge was not isolated. A per-side flag would let a result
             # where only one contestant was confined read as a confined challenge.
-            "isolated": all(
-                bool((getattr(card, "metrics", None) or {}).get("isolated", False))
-                for card in (getattr(result, "king_card", None),
-                             getattr(result, "candidate_card", None))
-                if card is not None) and any(
-                getattr(result, name, None) is not None
-                for name in ("king_card", "candidate_card")),
+            "isolated": bool(cards) and all(card["isolated"] for card in cards),
         }
 
     def render_challenge_text(self, result) -> str:

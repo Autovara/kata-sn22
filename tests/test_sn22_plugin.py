@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import tempfile
 import textwrap
 from pathlib import Path
 
@@ -84,13 +85,45 @@ def _run(plugin, problems, agent_root: Path, tmp_path: Path, label: str):
     return plugin.run_candidate(agent_path=str(agent_root), problems=problems, context=context)
 
 
-class _Result:
-    """Stands in for the core's challenge result object for serialization tests."""
+_BUNDLE: Path | None = None
 
-    def __init__(self, king, challenger, identity):
-        self.king_card = king
-        self.candidate_card = challenger
-        self.benchmark_identity = identity
+
+def _bundle() -> str:
+    """A real, tiny agent bundle on disk. Serialization hashes the bundle it publishes, so a
+    stand-in path would exercise a code path production never takes."""
+    global _BUNDLE
+    if _BUNDLE is None:
+        _BUNDLE = Path(tempfile.mkdtemp(prefix="sn22-bundle-"))
+        (_BUNDLE / "agent.py").write_text("# bundle\n", encoding="utf-8")
+    return str(_BUNDLE)
+
+
+def _Result(king, challenger, identity):
+    """The result object the ENGINE actually returns.
+
+    This used to be a hand-written stand-in carrying ``king_card``/``candidate_card`` -- attributes
+    ``GenericChallengeResult`` does not have. Every serialization test passed against a shape that
+    never existed in production, where the same code read those attributes as ``None`` and published
+    a result whose king and challenger were both null. Building the real object is what makes these
+    tests able to fail.
+    """
+    from kata.core.challenge import ChallengeOutcome, GenericChallengeResult, ScoredVariant
+
+    def _variant(label, card):
+        return None if card is None else ScoredVariant(label, _bundle(), card)
+
+    return GenericChallengeResult(
+        run_id="run-1",
+        output_root=_bundle(),
+        outcome=ChallengeOutcome(
+            problems=None,
+            benchmark_identity=identity,
+            scoring_profile=None,
+            king=_variant("king", king),
+            ranked=[v for v in (_variant("pr-7", challenger),) if v is not None],
+            winner=None,
+        ),
+    )
 
 
 def _card(**over) -> ScoreCard:
@@ -442,3 +475,81 @@ def test_progress_is_reported_per_task(plugin, problems, tmp_path):
                          problems=problems, context=context)
     assert [update.done for update in seen] == list(range(1, len(problems.tasks) + 1))
     assert all(update.total == len(problems.tasks) for update in seen)
+
+
+# ---- the platform has to be able to read the verdict --------------------------------------------
+#
+# SN22 decides who won using its OWN tasks, judge and signal order -- none of that is shared with,
+# or comparable to, any other subnet. But the platform has to READ that verdict to merge the PR and
+# crown the king, and it reads every lane by the same key names. These pin the envelope.
+#
+# The regression they exist for: the published document named its contestants `king_card` and
+# `candidate_card`, attributes the engine's result object does not have, so both sides serialized as
+# null; and it spelled its signals `signals`/`direction`, which the platform's promotion gate does
+# not read. The gate found no usable contract, and every SN22 PR was returned to pending forever.
+
+def _published(plugin, king_quality=0.3, challenger_quality=0.9):
+    return plugin.challenge_result_json(
+        _Result(_card(quality=king_quality), _card(quality=challenger_quality), "e" * 64))
+
+
+def test_the_contestants_are_not_null(plugin):
+    document = _published(plugin)
+    assert document["king"] is not None
+    assert document["challenger"] is not None
+
+
+def test_the_candidate_is_findable_by_its_submission_id(plugin):
+    """The platform looks the challenger up by the id it issued (``pr-<number>``). Without
+    ``entries`` there is nothing to look up and the round decides nothing."""
+    document = _published(plugin)
+    assert [entry["submission_id"] for entry in document["entries"]] == ["pr-7"]
+
+
+def test_the_king_publishes_the_hash_of_the_bundle_that_earned_it(plugin):
+    """The gate refuses to promote against a king with no artifact hash: it cannot tell whether the
+    king it just scored is the king currently published."""
+    assert len(document_hash := _published(plugin)["king"]["artifact_hash"]) > 0
+    assert document_hash == _published(plugin)["entries"][0]["artifact_hash"]
+
+
+def test_every_card_declares_its_signals_in_the_platform_contract(plugin):
+    """``name``/``value``/``higher_better``, in SN22's own priority order. ``higher_better`` must be
+    a real bool -- the reader rejects the whole contract if it is not, and rejecting means the PR
+    goes back to pending rather than being judged."""
+    document = _published(plugin)
+    for card in (document["king"], *document["entries"]):
+        declared = card["rank_signals"]
+        assert [s["name"] for s in declared] == [name for name, _ in RANK_SIGNALS]
+        assert [s["higher_better"] for s in declared] == [higher for _, higher in RANK_SIGNALS]
+        assert all(isinstance(s["higher_better"], bool) for s in declared)
+        assert all(isinstance(s["value"], (int, float)) for s in declared)
+
+
+def test_both_spellings_of_a_signal_always_agree(plugin):
+    """``signals`` (canary, humans) and ``rank_signals`` (promotion gate) are generated from one
+    tuple, so they cannot drift. If they ever did, the canary would be vetting numbers the crown was
+    not decided on."""
+    for card in (_published(plugin)["king"], *_published(plugin)["entries"]):
+        assert {(s["name"], s["value"]) for s in card["signals"]} == {
+            (s["name"], s["value"]) for s in card["rank_signals"]
+        }
+        assert [s["direction"] == "higher_is_better" for s in card["signals"]] == [
+            s["higher_better"] for s in card["rank_signals"]
+        ]
+
+
+def test_king_and_challenger_declare_the_same_contract(plugin):
+    """The gate refuses to compare two contestants whose signal schemas differ, and refusing means
+    no promotion. Both sides come from the same tuple, so this holds by construction."""
+    document = _published(plugin)
+    schema = lambda card: [(s["name"], s["higher_better"]) for s in card["rank_signals"]]  # noqa: E731
+    assert schema(document["king"]) == schema(document["entries"][0])
+
+
+def test_a_side_that_did_not_run_is_still_absent(plugin):
+    """Publishing an empty contract instead of ``null`` would let the gate compare a contestant
+    against nothing and read the absence as a zero it could beat."""
+    document = plugin.challenge_result_json(_Result(None, _card(), "f" * 64))
+    assert document["king"] is None
+    assert document["challenger"] is not None

@@ -404,13 +404,15 @@ def test_the_published_result_records_whether_the_challenge_was_isolated(tmp_pat
                                              context=_Context()), problems)
     assert card.metrics["isolated"] is sandbox.available()
 
-    class _Result:
-        benchmark_identity = problems.identity
-        challenge_id = problems.challenge_id
-        king_card = card
-        candidate_card = card
+    from kata.core.challenge import ChallengeOutcome, GenericChallengeResult, ScoredVariant
 
-    document = plugin.challenge_result_json(_Result())
+    variant = ScoredVariant("king", str(agent_dir), card)
+    document = plugin.challenge_result_json(GenericChallengeResult(
+        run_id=problems.challenge_id, output_root=str(tmp_path),
+        outcome=ChallengeOutcome(problems=problems, benchmark_identity=problems.identity,
+                                 scoring_profile=plugin.scoring_profile, king=variant,
+                                 ranked=[ScoredVariant("pr-7", str(agent_dir), card)],
+                                 winner=None)))
     assert document["isolated"] is sandbox.available()
     assert document["challenge_id"] == problems.challenge_id
     assert document["king"]["isolated"] is sandbox.available()
@@ -421,12 +423,14 @@ def test_a_result_with_no_cards_is_not_reported_as_isolated():
     confined. Stated as its own test because it is the exact shape of that mistake."""
     plugin = Sn22DesearchPlugin()
 
-    class _Empty:
-        benchmark_identity = "x" * 64
-        king_card = None
-        candidate_card = None
+    from kata.core.challenge import ChallengeOutcome, GenericChallengeResult
 
-    assert plugin.challenge_result_json(_Empty())["isolated"] is False
+    empty = GenericChallengeResult(
+        run_id="r", output_root="/tmp",
+        outcome=ChallengeOutcome(problems=None, benchmark_identity="x" * 64,
+                                 scoring_profile=plugin.scoring_profile, king=None, ranked=[],
+                                 winner=None))
+    assert plugin.challenge_result_json(empty)["isolated"] is False
 
 
 # ---- quota cannot be bypassed by concurrency or retry (plan §9 "cost and recovery") -------------
