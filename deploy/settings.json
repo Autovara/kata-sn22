@@ -1,0 +1,41 @@
+{
+  "_comment": [
+    "SN22's deployment settings. Read by kata-subnets-deploy's installer, which validates every",
+    "value against its allowlist and ceilings before rendering any unit. This file may set only",
+    "what a subnet decides for itself: challenge sizing, its own budget caps, and round timing.",
+    "Lane identity, source repo, plugin path, entry point, writable paths and public visibility are",
+    "the registry's; naming one here is refused outright, not ignored.",
+    "subnet_id and lane_id below are an ASSERTION, not an input: they are checked against the",
+    "registry lane so pointing the generator at the wrong checkout fails loudly.",
+    "KATA_PROMOTE_MARGINS are the indifference bands a challenger must clear on each ranked signal.",
+    "They are SN22's because only SN22 knows what a meaningful difference is in its own units;",
+    "sn22_latency_seconds is a SUM over the round's tasks, so its margin scales with task_count and",
+    "the two must be recalibrated together."
+  ],
+  "schema_version": 1,
+  "subnet_id": 22,
+  "lane_id": "sn22__desearch",
+
+  "challenge_config": {
+    "task_count": 8,
+    "max_provider_calls": 8,
+    "max_tokens": 20000,
+    "max_wall_seconds": 120,
+    "max_results": 5
+  },
+
+  "lane_env": {
+    "KATA_SUBNET_BUDGET_INFERENCE_CALLS": "128",
+    "KATA_SUBNET_BUDGET_SPEND_USD": "5.0",
+    "KATA_SUBNET_BUDGET_DATA_API_CALLS": "256",
+    "KATA_SUBNET_BUDGET_SCRAPE_UNITS": "64",
+    "KATA_SUBNET_MAX_RUNTIME": "3600",
+    "KATA_PROMOTE_MARGINS": "{\"sn22_weighted_quality\":0.01,\"sn22_citation_precision\":0.01,\"sn22_coverage\":0.01,\"sn22_cost_units\":1.0,\"sn22_latency_seconds\":2.0}"
+  },
+
+  "unit_params": {
+    "timeout_start_sec": 3600,
+    "round_gap_sec": 900,
+    "requires_docker": false
+  }
+}
