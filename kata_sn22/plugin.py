@@ -68,6 +68,11 @@ from kata_sn22.protocol import (
 )
 from kata_sn22.scoring import RANK_SIGNALS, Signals, TaskAttempt, compare_signals, score_attempts
 
+#: The packaged question pool a production epoch is built from. Overridable per challenge only so a
+#: staging deployment can point at a different snapshot -- never at the calibration pool, which is
+#: refused by kind rather than by name (see kata_sn22.question_pool).
+PRODUCTION_QUESTION_POOL = "production"
+
 #: Identifies the scoring rules. Part of the benchmark identity, so changing the judge invalidates
 #: every cached score rather than silently re-ranking history.
 JUDGE_POLICY_ID = "sn22-upstream-evidence-v1"
@@ -117,6 +122,11 @@ class Sn22Problems:
     manifest: QueryManifest
     tasks: tuple[Task, ...]
     challenge_id: str
+    #: The production epoch: 60 tasks, four pools, three deep samples each, built from packaged
+    #: upstream rows. Present under the ``tee`` backend and ``None`` under ``sandbox``, because the
+    #: two paths have not converged yet -- Phase F is where the sandbox's scorer is replaced and
+    #: ``tasks`` above stops existing. A duel NEVER runs without one; see ``sample_problems``.
+    epoch: object = None
 
     @property
     def identity(self) -> str:
@@ -363,12 +373,21 @@ class Sn22DesearchPlugin(SubnetPlugin):
 
     # ---- sealing a challenge --------------------------------------------------------------------
     def sample_problems(self, *, seed: str, config: dict[str, Any]) -> Sn22Problems:
-        """Draw one challenge's questions from the versioned pool.
+        """Draw one challenge's questions.
 
         No corpus is frozen. Both contestants search the live web with their own credentials, and
         the validator verifies both against sources IT fetches -- upstream's model, and the one a
         sealed snapshot was standing in for.
+
+        **Under the production backend this builds the upstream epoch and refuses anything else.**
+        The hand-written calibration pool below is six queries; it exists so a miner can iterate
+        offline, and using it for a duel would mean a King defended its crown against a question set
+        that has nothing to do with the subnet. There is deliberately no flag that re-enables it in
+        production and no fallback when the packaged rows are missing -- the round fails first.
         """
+        epoch = self._production_epoch(seed=seed, config=config) if tee_execution_enabled() \
+            else None
+
         count = int(config.get("task_count") or 4)
         manifest = fixtures.calibration_manifest(seed=seed, count=count)
         limits = Limits(
@@ -380,7 +399,39 @@ class Sn22DesearchPlugin(SubnetPlugin):
         tasks = tuple(fixtures.tasks_for(manifest, limits=limits))
         for task in tasks:
             validate_task(task)   # a malformed task would misscore BOTH contestants
-        return Sn22Problems(manifest=manifest, tasks=tasks, challenge_id=f"sn22-{seed}")
+        return Sn22Problems(manifest=manifest, tasks=tasks, challenge_id=f"sn22-{seed}",
+                            epoch=epoch)
+
+    @staticmethod
+    def _production_epoch(*, seed: str, config: dict[str, Any]):
+        """The upstream epoch a real duel is scored on: 60 tasks, never fewer.
+
+        ``task_count`` is deliberately not consulted. Upstream deep-scores 20% of a pool and DROPS
+        any contestant with fewer than three deep samples, so a smaller epoch does not measure less
+        -- it scores zero for a reason unrelated to the answers. A config asking for one is refused
+        rather than quietly rounded up, because the operator who set it believes something false.
+        """
+        from kata_sn22.epoch_manifest import TASKS_PER_EPOCH, build_epoch
+        from kata_sn22.question_pool import PoolError, load_pool
+
+        requested = config.get("task_count")
+        if requested is not None and int(requested) != TASKS_PER_EPOCH:
+            raise Sn22AgentError(
+                f"task_count={requested} cannot be scored: an upstream epoch is exactly "
+                f"{TASKS_PER_EPOCH} tasks (15 per pool), because a pool with fewer than three "
+                f"deep samples is DROPPED rather than scored low")
+        name = str(config.get("question_pool") or PRODUCTION_QUESTION_POOL)
+        try:
+            # BOTH calls, not just the load. A missing pool and a development pool are the same
+            # class of misconfiguration -- nobody snapshotted the questions -- and an operator who
+            # got Sn22AgentError for one and a raw PoolError for the other would reasonably
+            # conclude the second was a different, deeper problem.
+            pool = load_pool(name)
+            return build_epoch(seed=seed, pool=pool, production=True)
+        except PoolError as exc:
+            # Fail here, before either contestant has spent anything. Upstream's fallback is an LLM
+            # call the validator pays for, and the validator holds no paid credential at all.
+            raise Sn22AgentError(f"cannot build a production epoch: {exc}") from exc
 
     def benchmark_identity(self, problems: Sn22Problems) -> str:
         """NON-EMPTY: the question set plus the rules used to score it.

@@ -1,0 +1,8 @@
+{
+ "note": "NOT upstream rows. build_epoch(production=True) refuses this pool by kind. Run tools/snapshot_questions.py to produce an upstream-snapshot pool.",
+ "pool_kind": "development",
+ "row_count": 36,
+ "sha256": "712d0dea70d550b3a133d1a954e33003f48252c43d3704849cde8d1c4f6089da",
+ "source": "hand-written in kata-sn22 so the test suite can build a full epoch offline",
+ "upstream_commit": ""
+}

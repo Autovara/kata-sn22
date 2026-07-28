@@ -91,24 +91,47 @@ def test_no_validator_credential_is_ever_declared(plugin, monkeypatch, backend):
 
 # ---- declaration and execution must agree------------------------------------------------------
 
+@pytest.fixture
+def epoch_from_development_rows(monkeypatch):
+    """Let a tee `sample_problems` build its epoch from the development rows.
+
+    Since Phase E the production backend refuses a development pool by kind and refuses any
+    ``task_count`` that is not a full 60-task epoch -- both correct, and both beside the point in
+    this module, which is about whether a declared TEE actually reaches a room. Relabelling the
+    packaged rows here keeps each test about one thing; the refusals themselves are covered in
+    ``tests/test_sn22_epoch_manifest.py``.
+    """
+    import dataclasses
+
+    from kata_sn22 import plugin as plugin_module
+    from kata_sn22 import question_pool
+
+    real = question_pool.load_pool("development")
+    relabelled = dataclasses.replace(real, kind=question_pool.KIND_UPSTREAM_SNAPSHOT)
+    monkeypatch.setattr(plugin_module, "PRODUCTION_QUESTION_POOL", "development")
+    monkeypatch.setattr(question_pool, "load_pool", lambda _name: relabelled)
+    return relabelled
+
+
 def test_declaring_tee_without_a_room_refuses_rather_than_running_locally(
-    plugin, monkeypatch, tmp_path
+    plugin, monkeypatch, tmp_path, epoch_from_development_rows
 ):
     """The whole point of this module."""
     monkeypatch.setenv(execution_policy.EXECUTION_BACKEND_ENV, "tee")
     monkeypatch.delenv(ROOM_ENDPOINT_ENV, raising=False)
-    problems = plugin.sample_problems(seed="tee-no-room", config={"task_count": 1})
+    problems = plugin.sample_problems(seed="tee-no-room", config={})
 
     with pytest.raises(Sn22AgentError, match="no sealed room is configured"):
         plugin.run_candidate(agent_path=str(_submission(tmp_path)), problems=problems,
                              context=_context(tmp_path))
 
 
-def test_the_refusal_names_both_ways_out(plugin, monkeypatch, tmp_path):
+def test_the_refusal_names_both_ways_out(plugin, monkeypatch, tmp_path,
+                                        epoch_from_development_rows):
     """An operator hitting this must not have to read the source to resolve it."""
     monkeypatch.setenv(execution_policy.EXECUTION_BACKEND_ENV, "tee")
     monkeypatch.delenv(ROOM_ENDPOINT_ENV, raising=False)
-    problems = plugin.sample_problems(seed="tee-msg", config={"task_count": 1})
+    problems = plugin.sample_problems(seed="tee-msg", config={})
     with pytest.raises(Sn22AgentError) as caught:
         plugin.run_candidate(agent_path=str(_submission(tmp_path)), problems=problems,
                              context=_context(tmp_path))
@@ -128,13 +151,14 @@ def test_the_development_backend_runs_without_a_room(plugin, monkeypatch, tmp_pa
     assert raw.variant == "king"
 
 
-def test_a_configured_room_satisfies_the_tee_declaration(plugin, monkeypatch, tmp_path):
+def test_a_configured_room_satisfies_the_tee_declaration(plugin, monkeypatch, tmp_path,
+                                                        epoch_from_development_rows):
     """A configured TEE selects the remote client and never falls through to local execution."""
     from kata_sn22 import plugin as plugin_module
 
     monkeypatch.setenv(execution_policy.EXECUTION_BACKEND_ENV, "tee")
     monkeypatch.setenv(ROOM_ENDPOINT_ENV, "https://room.example:8443")
-    problems = plugin.sample_problems(seed="tee-room", config={"task_count": 1})
+    problems = plugin.sample_problems(seed="tee-room", config={})
     remote_result = object()
     monkeypatch.setattr(
         plugin,

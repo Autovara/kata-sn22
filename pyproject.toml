@@ -14,6 +14,11 @@ dev = ["pytest>=8.0", "ruff>=0.6"]
 # to record what the real upstream computes. The lane runtime imports kata_sn22.upstream_adapter,
 # which has no third-party dependency, so none of this reaches production.
 parity = ["pytest>=8.0", "ruff>=0.6", "pydantic>=2.0", "pytz", "numpy"]
+# Only tools/snapshot_questions.py needs these, and it runs ONCE on an operator's machine to capture
+# the upstream question rows into kata_sn22/datasets/. Network access at snapshot time is fine;
+# network access at duel time is the thing the packaged rows exist to avoid. Keeping them optional
+# is what stops the lane runtime -- which runs in a room with no egress -- acquiring them.
+snapshot = ["huggingface_hub>=0.24", "datasets>=2.20"]
 
 # Discovered by the Kata platform via the kata.subnets entry-point group.
 [project.entry-points."kata.subnets"]
