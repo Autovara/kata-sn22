@@ -34,6 +34,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from kata.plugins.contract import (
     EnvSpec,
@@ -107,6 +108,101 @@ PROMOTION_MARGINS: dict[str, float] = {
     # the two TOGETHER rather than picking a margin and a task count separately.
     "sn22_latency_seconds": 2.0,
 }
+
+
+def _epoch_commitment(epoch):
+    """A ``QueryManifest`` standing for a production epoch, so one identity function serves both.
+
+    The 60 questions are v2 tasks and do not fit the v1 manifest's ``(task_id, query, type, mode)``
+    entries, but the platform reads ONE benchmark identity per lane. This carries the epoch's own
+    digest as the queries digest, so the identity still moves whenever the questions do.
+    """
+    from kata_sn22.epoch_manifest import pool_of
+
+    entries = tuple(
+        (task.task_id,
+         getattr(task, "prompt", None) or getattr(task, "query", ""),
+         pool_of(task).split(":")[0],
+         pool_of(task).split(":")[1] if ":" in pool_of(task) else None)
+        for task in epoch.tasks
+    )
+    # The real question text goes in, and only its DIGEST comes out: ``as_commitment`` publishes
+    # ``queries_sha256`` and never an entry. Task ids alone would not do -- they are ``fast-00``
+    # through ``x_search-14`` in every epoch, so an identity built on them would never move.
+    return QueryManifest(
+        source_id=f"sn22-epoch:{epoch.as_document()['pool_name']}",
+        source_version=PROTOCOL_VERSION,
+        round_seed=epoch.seed,
+        entries=entries,
+    )
+
+
+def _failure_category(status, diagnostics: dict) -> str | None:
+    """The category kata-bot publishes, or ``None`` when nothing failed.
+
+    A CATEGORY, never a provider's own words: a provider rejecting a request quotes that request,
+    and the request carried the contestant's key. The closed set lives in
+    ``kata_bot.continuous.FAILURE_CATEGORIES``; anything outside it is dropped there rather than
+    printed.
+    """
+    if status.value == "ok":
+        return None
+    if status.value == "infrastructure_failure":
+        return "infrastructure"
+    # A credential failure names WHICH provider fault, so a miner knows whether to reseal, top up
+    # or wait. Ordered so the most actionable wins when several providers failed at once.
+    ranked = ("missing", "invalid", "unauthorized", "payment_required", "insufficient",
+              "expired", "rate_limited")
+    observed = set((diagnostics or {}).get("credentials", {}).values())
+    for fault in ranked:
+        if fault in observed:
+            return f"credential_{fault}"
+    return "credential_invalid"
+
+
+#: The ONE signal a production duel is ranked on. Higher wins; a tie keeps the King.
+PRODUCTION_RANK_SIGNALS: tuple[tuple[str, bool], ...] = (("sn22_combined_score", True),)
+
+
+@dataclass(frozen=True)
+class Sn22ProductionSignals:
+    """What a production card publishes: one score, and why it is what it is.
+
+    Deliberately NOT the seven calibration signals. Those ranked promotions before the real upstream
+    scorer was executable; a second ordering on top of upstream's own arithmetic would decide duels
+    on a rule nobody upstream wrote down.
+    """
+
+    sn22_combined_score: float
+    status: str
+    beats_king_pairwise: bool
+    failure_category: str | None = None
+    detail: str = ""
+
+    def as_metrics(self) -> dict:
+        return {"sn22_combined_score": self.sn22_combined_score, "status": self.status}
+
+
+@dataclass(frozen=True)
+class Sn22ProductionResult:
+    """One production duel, in the shape the platform's challenge reader expects."""
+
+    run_id: str
+    output_root: str
+    outcome: object
+    record: object                       # kata_sn22.production_challenge.DuelRecord
+
+    @property
+    def king(self):
+        return self.outcome.king
+
+    @property
+    def ranked(self) -> list:
+        return self.outcome.ranked
+
+    @property
+    def winner(self):
+        return self.outcome.winner
 
 
 @dataclass(frozen=True)
@@ -371,6 +467,150 @@ class Sn22DesearchPlugin(SubnetPlugin):
             resources={"protocol_version": PROTOCOL_VERSION},
         )
 
+    # ---- one production duel ---------------------------------------------------------------------
+    def run_challenge(self, *, king_agent_path: str, candidates: list, config: dict,
+                      output_root: str, run_id: str | None = None,
+                      progress_path: str | None = None):
+        """Run one SN22 duel.
+
+        Under the ``tee`` backend this is the whole production path, and it deliberately shares
+        nothing with the calibration one: a 60-task epoch, eight attested pool jobs, and a promotion
+        decided by the pinned upstream's own ``combine_pool_scores`` over both contestants.
+
+        Under ``sandbox`` it falls through to the generic runner, which is the free calibration path
+        a miner iterates against. The two must not be reachable from each other -- a production
+        round that quietly used the six-query pool and the seven-signal comparator would look
+        exactly like a working round.
+        """
+        if not tee_execution_enabled():
+            return super().run_challenge(
+                king_agent_path=king_agent_path, candidates=candidates, config=config,
+                output_root=output_root, run_id=run_id, progress_path=progress_path)
+
+        from kata_sn22.production_challenge import DuelDeferred, run_duel
+
+        resolved_run_id = run_id or f"challenge-{uuid4().hex}"
+        problems = self.sample_problems(seed=resolved_run_id, config=config)
+        if problems.epoch is None:
+            raise Sn22AgentError(
+                "the production backend produced no epoch; refusing to score a duel on the "
+                "calibration question pool")
+
+        if not candidates:
+            raise Sn22AgentError("a duel needs one challenger")
+        if len(candidates) > 1:
+            # A pool score is normalised across the contestants in it, so three sides would not be
+            # three duels -- it would be one comparison nobody designed.
+            raise Sn22AgentError(
+                f"SN22 scores exactly two contestants; got {len(candidates)} challengers. "
+                f"Upstream's pool normalisation is pairwise")
+        challenger_label, challenger_path = candidates[0]
+
+        king = self._contestant("king", king_agent_path)
+        challenger = self._contestant(challenger_label, challenger_path)
+
+        try:
+            record = run_duel(
+                manifest=problems.epoch, king=king, challenger=challenger,
+                run_pool=self._run_pool_in_room, challenge_id=resolved_run_id)
+        except DuelDeferred as exc:
+            # NOT a contestant losing. Nothing may be promoted from a duel that could not be
+            # decided, and the caller must be able to tell that apart from a challenger that lost.
+            raise Sn22AgentError(f"the SN22 duel was deferred: {exc}") from exc
+
+        return self._as_challenge_result(
+            run_id=resolved_run_id, output_root=output_root, problems=problems, record=record,
+            king_path=king_agent_path, challenger_label=challenger_label,
+            challenger_path=challenger_path)
+
+    def _contestant(self, label: str, agent_path: str):
+        """One side of the duel, with its bundle hashed and its sealed credential located."""
+        from kata_sn22.execution.tee_room import hash_bundle, sealed_key_for_bundle
+        from kata_sn22.production_challenge import Contestant
+
+        root = Path(agent_path).expanduser().resolve()
+        return Contestant(
+            label=label, bundle_path=str(root), bundle_sha256=hash_bundle(root),
+            sealed_key=sealed_key_for_bundle(root))
+
+    def _run_pool_in_room(self, contestant, pool: str, job: str):
+        """Send ONE pool job to the sealed room and return only a quote-bound answer.
+
+        The seam the end-to-end test replaces. Everything about attestation policy stays in
+        ``execution.tee_room`` rather than being restated here.
+        """
+        from kata_sn22.execution.tee_room import (
+            DcapQvlVerifier,
+            HttpRoomLauncher,
+            evaluate_candidate_in_room,
+            resolve_room_policy,
+        )
+
+        launcher = HttpRoomLauncher(os.environ[ROOM_ENDPOINT_ENV].strip())
+        return evaluate_candidate_in_room(
+            agent_ref=contestant.bundle_path,
+            project_key=job,
+            sealed_key_ref=contestant.sealed_key,
+            bundle_sha256=contestant.bundle_sha256,
+            policy=resolve_room_policy(),
+            launcher=launcher,
+            verifier=DcapQvlVerifier(),
+            seen_nonces=self._seen_nonces,
+        )
+
+    def _as_challenge_result(self, *, run_id: str, output_root: str, problems, record,
+                             king_path: str, challenger_label: str, challenger_path: str):
+        """Wrap the verdict in the envelope the platform reads."""
+        from kata.core.challenge import ChallengeOutcome, ScoredVariant
+
+        verdict = record.verdict
+        king_card = self._production_card(verdict, side="king", record=record)
+        challenger_card = self._production_card(verdict, side="challenger", record=record)
+
+        king_variant = ScoredVariant(label="king", agent_path=king_path, card=king_card)
+        challenger_variant = ScoredVariant(
+            label=challenger_label, agent_path=challenger_path, card=challenger_card)
+
+        outcome = ChallengeOutcome(
+            problems=problems,
+            benchmark_identity=self.benchmark_identity(problems),
+            scoring_profile=self.scoring_profile,
+            king=king_variant,
+            ranked=[challenger_variant],
+            winner=challenger_variant if verdict.challenger_promotes else None,
+        )
+        return Sn22ProductionResult(
+            run_id=run_id, output_root=str(output_root), outcome=outcome, record=record)
+
+    @staticmethod
+    def _production_card(verdict, *, side: str, record) -> ScoreCard:
+        """One contestant's card. ``comparable`` IS the ranking signal, not a proxy for it."""
+        from kata_sn22.paired_scoring import CHALLENGER, KING
+
+        score = verdict.king_score if side == "king" else verdict.challenger_score
+        status = verdict.king_status if side == "king" else verdict.challenger_status
+        promotes = verdict.challenger_promotes if side != "king" else False
+        diagnostics = verdict.diagnostics.get(KING if side == "king" else CHALLENGER, {})
+
+        signals = Sn22ProductionSignals(
+            sn22_combined_score=round(float(score), 12),
+            status=status.value,
+            beats_king_pairwise=bool(promotes),
+            failure_category=_failure_category(status, diagnostics),
+            detail=f"pools_scored={diagnostics.get('pools_scored', 0)} "
+                   f"deep_samples={diagnostics.get('deep_samples', 0)}",
+        )
+        return ScoreCard(
+            comparable=signals.sn22_combined_score,
+            passed=status.value == "ok",
+            metrics={**signals.as_metrics(),
+                     "credentials": diagnostics.get("credentials", {}),
+                     # Every contestant ran in an attested room or the duel deferred, so a
+                     # production card is isolated by construction.
+                     "isolated": True},
+            payload=signals,
+        )
+
     # ---- sealing a challenge --------------------------------------------------------------------
     def sample_problems(self, *, seed: str, config: dict[str, Any]) -> Sn22Problems:
         """Draw one challenge's questions.
@@ -385,9 +625,20 @@ class Sn22DesearchPlugin(SubnetPlugin):
         that has nothing to do with the subnet. There is deliberately no flag that re-enables it in
         production and no fallback when the packaged rows are missing -- the round fails first.
         """
-        epoch = self._production_epoch(seed=seed, config=config) if tee_execution_enabled() \
-            else None
+        if tee_execution_enabled():
+            # PRODUCTION. The calibration pool is not built, not consulted and not reachable from
+            # here. It holds six hand-written queries; a King defending its crown against them
+            # would be defending nothing, and a round that quietly used them would look exactly
+            # like a working round.
+            epoch = self._production_epoch(seed=seed, config=config)
+            return Sn22Problems(
+                manifest=_epoch_commitment(epoch),
+                tasks=(),                       # production tasks live on the epoch, in v2 shape
+                challenge_id=f"sn22-{seed}",
+                epoch=epoch,
+            )
 
+        epoch = None
         count = int(config.get("task_count") or 4)
         manifest = fixtures.calibration_manifest(seed=seed, count=count)
         limits = Limits(
@@ -682,18 +933,42 @@ class Sn22DesearchPlugin(SubnetPlugin):
             payload=signals,
         )
 
+    def _compare_production(self, a: ScoreCard, b: ScoreCard) -> int:
+        """Order two production cards by the one signal that ranks them."""
+        left, right = a.payload.sn22_combined_score, b.payload.sn22_combined_score
+        return (left > right) - (left < right)
+
     def compare(self, a: ScoreCard, b: ScoreCard) -> int:
         """EXACT ordering, no margins.
+
+        A production card ranks on its single upstream-derived score; the rest of this docstring
+        describes the calibration path.
 
         Margins are deliberately not applied here. An epsilon comparison is not transitive — a≈b and
         b≈c can hold while a<c — so a sort built on it is unstable and depends on input order. This
         stays a strict total order for ranking and display; the promotion decision below is where
         the noise band belongs, because that is where a wrong call actually costs something.
         """
+        if isinstance(a.payload, Sn22ProductionSignals):
+            return self._compare_production(a, b)
         return compare_signals(a.payload, b.payload)
 
     def beats_king(self, candidate: ScoreCard, king: ScoreCard | None) -> bool:
-        """Promotion, WITH the indifference bands. A challenger must be meaningfully better."""
+        """Promotion.
+
+        **A production duel decided itself.** Its card carries the verdict from upstream's own
+        ``combine_pool_scores`` over both contestants, so this returns that verdict unchanged. There
+        is no margin: the score is pair-normalised, and an indifference band on it would be Kata
+        overriding upstream's arithmetic about what counts as better. A tie keeps the King, which
+        strict ``>`` in the verdict already encodes.
+
+        The seven-signal comparator below is the CALIBRATION path, and it keeps its indifference
+        bands: those signals are noisy absolute measurements of one contestant, which is exactly the
+        case a dead-zone is for.
+        """
+        if isinstance(candidate.payload, Sn22ProductionSignals):
+            return bool(candidate.payload.beats_king_pairwise)
+
         from kata_sn22.scoring import beats_king as _beats
 
         return _beats(candidate.payload, None if king is None else king.payload,
@@ -975,8 +1250,13 @@ class Sn22DesearchPlugin(SubnetPlugin):
                 return None
             card = variant.card
             signals = card.payload
-            values = [(name, higher, getattr(signals, name)) for name, higher in RANK_SIGNALS]
-            return {
+            # A production duel publishes ONE signal, from upstream's own aggregation. A
+            # calibration run publishes the seven. The two payload types are what tells them apart,
+            # so a card can never be read under the wrong schema.
+            production = isinstance(signals, Sn22ProductionSignals)
+            schema = PRODUCTION_RANK_SIGNALS if production else RANK_SIGNALS
+            values = [(name, higher, getattr(signals, name)) for name, higher in schema]
+            entry = {
                 "submission_id": variant.label,
                 "artifact_hash": self.hash_bundle(Path(variant.agent_path)),
                 "comparable": card.comparable,
@@ -994,6 +1274,14 @@ class Sn22DesearchPlugin(SubnetPlugin):
                 ],
                 "detail": signals.detail,
             }
+            if production:
+                # The lane decided this head-to-head itself, so kata-bot uses the verdict rather
+                # than comparing a PAIR-NORMALISED score against the King's historical average --
+                # which would be comparing numbers from different comparisons.
+                entry["beats_king_pairwise"] = signals.beats_king_pairwise
+                entry["failure_category"] = signals.failure_category
+                entry["status"] = signals.status
+            return entry
 
         outcome = getattr(result, "outcome", None)
         king_variant = getattr(outcome, "king", None)
@@ -1002,12 +1290,26 @@ class Sn22DesearchPlugin(SubnetPlugin):
         king = _card(king_variant)
         cards = [card for card in (king, *entries) if card is not None]
 
+        record = getattr(result, "record", None)
+        production_extra: dict = {}
+        if record is not None:
+            from kata_sn22.scorer_policy import policy_hash
+
+            production_extra = {
+                "task_manifest_sha256": record.manifest_digest,
+                "scorer_policy_hash": policy_hash(),
+                "execution_order": list(record.order),
+                "rank_signal": record.verdict.as_dict()["rank_signal"],
+                "pools": record.verdict.as_dict()["pools"],
+            }
+
         return {
             "schema_version": 1,
             "evaluator_id": self.evaluator_id,
             "lane_id": self.pack,
             "protocol_version": PROTOCOL_VERSION,
             "plugin_revision": PLUGIN_REVISION,
+            **production_extra,
             "judge_policy_id": JUDGE_POLICY_ID,
             "upstream_commit": UPSTREAM_COMMIT,
             "benchmark_identity": getattr(outcome, "benchmark_identity", "")

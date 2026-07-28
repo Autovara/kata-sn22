@@ -37,10 +37,11 @@ DEVELOPMENT_ONLY_MODULES = {"kata_sn22.parity"}
 #: ``tiktoken`` — the four packages upstream's own scoring semantics depend on — because since
 #: Phase F production executes the real vendored SN22 validator rather than a port of it.
 #:
-#: They are exempt from the standard-library rule and must NOT become reachable from the plugin
-#: entry point, which is what the agent-facing surface is built from. The distinction is the whole
-#: of ``docs/DECISION-bittensor-not-in-the-room.md`` as amended: the agent image carries none of
-#: this, and the trusted runner carries exactly this and no transport.
+#: They ARE reachable from the plugin entry point, and that is correct: the plugin runs on the
+#: validator host and inside the trusted runner, both of which carry those packages. They are
+#: exempt from the standard-library rule below. What must stay standard-library-only is the AGENT
+#: image, which is a different artifact — see ``test_the_agent_image_ships_only_the_sdk...`` and
+#: ``docs/DECISION-bittensor-not-in-the-room.md`` as amended.
 TRUSTED_RUNNER_MODULES = {
     "kata_sn22.upstream_runtime",
     "kata_sn22.neuron_adapter",
@@ -111,18 +112,45 @@ def test_the_room_never_imports_the_parity_harness():
         f"one import away from live scoring.")
 
 
-def test_the_trusted_runner_modules_are_not_reachable_from_the_entry_point():
-    """The agent-facing surface must not acquire the scorer's dependencies.
+#: What the AGENT image actually contains. This -- not the plugin closure -- is the surface that
+#: must be standard library only, because that image ships no package installer.
+AGENT_IMAGE_COPIES = ("kata_sn22_sdk", "sn22_relay.py")
 
-    Not a style rule. The agent image ships no installer, so a plugin closure that reached
-    ``upstream_runtime`` would fail at ``import`` inside a sealed room, on a duel, with no way to
-    install what it wanted.
+
+def test_the_agent_image_ships_only_the_sdk_and_the_relay_client():
+    """The load-bearing check, and it replaced a weaker one.
+
+    This used to assert that ``kata_sn22``'s plugin closure was standard-library-only. That held
+    while SN22 scored with a dependency-free PORT of the upstream reward code -- and it stopped
+    holding the moment production began executing the real vendored upstream, which needs pydantic,
+    numpy, pytz and tiktoken.
+
+    The old guard was aimed at the wrong artifact. ``kata_sn22.plugin`` never enters the agent
+    image: it runs on the validator host and inside the trusted runner, both of which carry those
+    four packages deliberately. What the agent image contains is the two things below, and THAT is
+    what has no installer to fix a missing dependency with.
     """
-    leaked = _runtime_closure() & TRUSTED_RUNNER_MODULES
-    assert not leaked, (
-        f"{sorted(leaked)} is reachable from the plugin entry point. Those modules execute the "
-        f"real vendored upstream and import pydantic/numpy/pytz/tiktoken; the agent-facing "
-        f"surface is standard library only and has no installer to fix it with.")
+    dockerfile = (PACKAGE.parent / "deploy" / "sn22-agent" / "Dockerfile").read_text(
+        encoding="utf-8")
+    copied = {line.split()[1] for line in dockerfile.splitlines()
+              if line.startswith("COPY ")}
+    assert copied == set(AGENT_IMAGE_COPIES), (
+        f"the agent image now copies {sorted(copied)}. Anything beyond the SDK and the relay "
+        f"client has to be standard library only, and has no installer to fix it with.")
+    assert "kata_sn22 " not in dockerfile, (
+        "the agent image copies the whole lane package, which imports the real upstream scorer")
+
+
+def test_the_relay_client_the_agent_image_ships_imports_only_the_standard_library():
+    """``kata_sn22_sdk`` is checked in ``tests/test_sn22_sdk.py``; this covers the other file."""
+    import sys
+
+    path = PACKAGE / "relay_client.py"
+    third_party = {
+        name for name in _imports(path)
+        if name not in sys.stdlib_module_names and name != "kata_sn22"
+    }
+    assert not third_party, f"the relay client imports {sorted(third_party)}"
 
 
 def test_the_trusted_runner_modules_still_exist():
