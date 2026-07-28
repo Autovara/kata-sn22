@@ -647,8 +647,11 @@ def test_the_penalty_matrix_covers_the_penalties_it_can_provoke(task):
 
 # ---- GATE: the seeded King is a valid incumbent ---
 
-KING = (Path(__file__).resolve().parents[2] / "kata" / "submissions" / "sn22__desearch"
-        / "miner" / "king-20260728-01" / "agent.py")
+# The King lives under kings/, NOT submissions/. submissions/ is the miner-owned tree -- a seeded
+# incumbent placed there would read as a miner's PR, and the lane would be competing against a
+# submission nobody made.
+KING = (Path(__file__).resolve().parents[2] / "kata" / "kings" / "sn22__desearch" / "miner"
+        / "agent.py")
 
 
 @pytest.fixture
