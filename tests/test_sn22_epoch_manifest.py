@@ -581,3 +581,46 @@ def test_no_production_pool_is_committed_yet():
     """
     assert not qp.pool_path("production").exists(), \
         "a production pool now exists; replace this test with one that builds an epoch from it"
+
+
+def test_two_rounds_draw_different_questions_from_the_pool():
+    """The pool is a bank, not a script. A question set that never changes is one a contestant
+    memorises once and answers from cache.
+
+    This failed when written: the builder walked file-ordered rows with a cursor starting at zero,
+    so every round drew the same first 45 questions however large the pool was. Upstream shuffles
+    before drawing (``HFQuestionPool.sample_lane``, ``SyntheticQueryGenerator._sample_web``); the
+    port had dropped it.
+
+    Uses a large synthetic pool because the packaged development pool has fewer rows than one round
+    needs, so it necessarily reuses them whatever the order.
+    """
+    import dataclasses
+
+    rows = tuple({"id": f"r{index}", "question": f"question number {index}",
+                  "lane": "news" if index % 4 else "x", "start_date": None, "end_date": None}
+                 for index in range(3000))
+    big = dataclasses.replace(qp.load_pool("development"), rows=rows)
+
+    def questions(seed: str) -> set:
+        built = em.build_epoch(seed=seed, pool=big, production=False)
+        return {task.prompt for task in built.tasks if isinstance(task, AiSearchTask)}
+
+    first, second = questions("challenge-001"), questions("challenge-002")
+    assert len(first) == 45
+    assert not (first & second), (
+        f"two rounds shared {len(first & second)} questions out of {len(first)}")
+
+
+def test_a_round_is_still_exactly_reproducible_from_its_seed():
+    """Shuffling must not cost reproducibility: both contestants get one manifest, and a reviewer
+    has to be able to rebuild it from the record."""
+    pool = qp.load_pool("development")
+    first = em.build_epoch(seed="reproduce", pool=pool, production=False)
+    second = em.build_epoch(seed="reproduce", pool=pool, production=False)
+    assert first.digest() == second.digest()
+    # X tasks carry `query`, AI tasks carry `prompt`; compare whichever each one has.
+    def _text(task) -> str:
+        return getattr(task, "prompt", None) or getattr(task, "query", "")
+
+    assert [_text(task) for task in first.tasks] == [_text(task) for task in second.tasks]

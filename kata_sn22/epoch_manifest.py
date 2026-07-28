@@ -318,8 +318,19 @@ def build_epoch(*, seed: str, pool: QuestionPool, production: bool = True,
     rng = random.Random(f"kata-sn22-epoch|{UPSTREAM_COMMIT}|{seed}")
     date_filter = rng.choice(date_filter_pool())
 
-    web_rows = pool.web()
-    x_rows = pool.lane("x")
+    # SHUFFLED per round, exactly as upstream does before drawing (``HFQuestionPool.sample_lane``
+    # and ``SyntheticQueryGenerator._sample_web`` both ``random.shuffle`` their rows).
+    #
+    # This was a cursor over file-ordered rows until it was noticed that every round then drew the
+    # SAME questions -- the pool is thousands of rows, but a round only needs 45, so it would have
+    # taken the first 45 in file order every time, forever. A question set that never changes is a
+    # question set a contestant memorises once and answers from cache.
+    #
+    # Seeded, so one round is still exactly reproducible from its seed.
+    web_rows = list(pool.web())
+    x_rows = list(pool.lane("x"))
+    rng.shuffle(web_rows)
+    rng.shuffle(x_rows)
     if not web_rows and not x_rows:
         raise ManifestError(
             "the question pool has no usable rows; a production epoch fails here rather than "
