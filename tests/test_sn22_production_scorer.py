@@ -4,7 +4,7 @@ Every test here needs the pinned upstream to actually execute, so the whole modu
 the ``upstream`` extra. That is deliberate: a version of these tests that "passed" against the port
 would be testing the thing Phase F exists to stop using.
 
-The load-bearing test is :func:`test_the_reference_agent_beats_a_fabricator`. It runs the agent
+The load-bearing test is :func:`test_the_king_beats_a_fabricator`. It runs the agent
 that ships in ``kata/submissions/`` through the real harness, frames it with the real synapse
 builder, and scores it with the real ``AdvancedScraperValidator`` against a contestant whose links
 do not exist.
@@ -13,7 +13,7 @@ while every unit test passed:
 
 * ``tiktoken`` classified as infrastructure, so the streaming penalty counted nothing;
 * ``highlights`` and ``text`` dropped when building the synapse, so no source could pass evidence;
-* the reference agent emitting three enormous chunks, which is a full streaming penalty;
+* the King emitting three enormous chunks, which is a full streaming penalty;
 * ``validator_identity`` missing from the neuron adapter, which raised inside
   ``compute_rewards_and_penalties`` and was swallowed into a pool of zeros.
 """
@@ -40,8 +40,11 @@ pytestmark = pytest.mark.skipif(
     not upstream_runtime.available(),
     reason="the real upstream needs the 'upstream' extra (uv sync --extra upstream)")
 
-REFERENCE = (Path(__file__).resolve().parents[2] / "kata" / "submissions" / "sn22__desearch"
-             / "miner" / "example-20260727-01" / "agent.py")
+# The reigning King, under kings/ -- NOT submissions/, which holds miners' entries and nothing
+# else. The King is also what the protocol tells miners to copy: a separate shipped example would be
+# a second agent to keep correct, and miners would be copying one while scored against the other.
+KING = (Path(__file__).resolve().parents[2] / "kata" / "kings" / "sn22__desearch" / "miner"
+        / "agent.py")
 
 SNIPPET = "The measured figure is 28 percent"
 PAGE_BODY = f"Global emissions were measured in 2024. {SNIPPET}, recorded in July 2026."
@@ -67,7 +70,7 @@ def task():
 
 
 @pytest.fixture
-def reference_answer(monkeypatch):
+def king_answer(monkeypatch):
     """The shipped reference agent's real output, produced by the real harness."""
     from kata_sn22_sdk import broker as sdk_broker
     from kata_sn22_sdk import harness
@@ -77,7 +80,7 @@ def reference_answer(monkeypatch):
     monkeypatch.delenv("SN22_RELAY_ENDPOINT", raising=False)
     monkeypatch.setattr(sdk_broker.BrokerClient, "_call",
                         lambda self, operation, payload: {"results": WEB_RESULTS})
-    return harness.run(AI_TASK_INPUT, agent_path=str(REFERENCE), stderr=io.StringIO())
+    return harness.run(AI_TASK_INPUT, agent_path=str(KING), stderr=io.StringIO())
 
 
 async def _fetch_pages(urls):
@@ -92,7 +95,7 @@ async def _judge(_messages):
 
 # ---- THE integration test ---
 
-def test_the_reference_agent_beats_a_fabricator(task, reference_answer):
+def test_the_king_beats_a_fabricator(task, king_answer):
     """Real agent, real harness, real upstream validator, real aggregation.
 
     The fabricator returns the same shape with links that do not exist, so the evaluator's fetch
@@ -101,23 +104,23 @@ def test_the_reference_agent_beats_a_fabricator(task, reference_answer):
     """
     from kata_sn22 import production_scorer as scorer
 
-    fabricated = {**reference_answer, "search_results": [
+    fabricated = {**king_answer, "search_results": [
         {**source, "link": source["link"].replace("source-", "fabricated-")}
-        for source in reference_answer["search_results"]]}
+        for source in king_answer["search_results"]]}
 
     score = asyncio.run(scorer.score_pool(
         pool="ai_search:fast", tasks=(task,),
-        king_answers={"t0": reference_answer}, challenger_answers={"t0": fabricated},
+        king_answers={"t0": king_answer}, challenger_answers={"t0": fabricated},
         deep_task_ids=frozenset({"t0"}), judge=_judge, fetch_pages=_fetch_pages,
         process_times={(0, "t0"): 3.0, (1, "t0"): 3.0}))
 
-    assert score.king.q_weight > 0.0, "the shipped reference agent scores nothing"
+    assert score.king.q_weight > 0.0, "the seeded King scores nothing"
     assert score.challenger.q_weight == 0.0, "fabricated sources scored"
     assert score.king.q_weight > score.challenger.q_weight
     assert score.credentials.as_dict()["chutes"] == "ok"
 
 
-def test_no_penalty_fires_on_the_reference_agent(task, reference_answer):
+def test_no_penalty_fires_on_the_king(task, king_answer):
     """It is the floor every miner copies. A penalty that fires on it makes the floor zero, and a
     miner would have no way to tell their own work from the template's."""
     import numpy as np
@@ -127,7 +130,7 @@ def test_no_penalty_fires_on_the_reference_agent(task, reference_answer):
     scorer.JudgeRouter(chutes=_judge).install()
     scorer.EvidenceRouter(fetch_pages=_fetch_pages).install()
     validator = scorer._validator_for("ai_search")
-    synapse = scorer.build_ai_synapse(task, reference_answer, process_time=3.0)
+    synapse = scorer.build_ai_synapse(task, king_answer, process_time=3.0)
 
     async def _apply(penalty):
         _raw, _adjusted, applied = await penalty.apply_penalties([synapse], np.array([0]), {})
@@ -135,10 +138,10 @@ def test_no_penalty_fires_on_the_reference_agent(task, reference_answer):
 
     fired = [(p.name, value) for p in validator.penalty_functions
              if (value := asyncio.run(_apply(p))) != 1.0]
-    assert not fired, f"penalties fired on the reference agent: {fired}"
+    assert not fired, f"penalties fired on the King: {fired}"
 
 
-def test_both_reward_models_score_the_reference_agent(task, reference_answer):
+def test_both_reward_models_score_the_king(task, king_answer):
     import numpy as np
 
     from kata_sn22 import production_scorer as scorer
@@ -146,22 +149,22 @@ def test_both_reward_models_score_the_reference_agent(task, reference_answer):
     scorer.JudgeRouter(chutes=_judge).install()
     scorer.EvidenceRouter(fetch_pages=_fetch_pages).install()
     validator = scorer._validator_for("ai_search")
-    synapse = scorer.build_ai_synapse(task, reference_answer, process_time=3.0)
+    synapse = scorer.build_ai_synapse(task, king_answer, process_time=3.0)
 
     async def _apply(reward):
         events, _, _, _ = await reward.apply([synapse], np.array([0]))
         return float(np.asarray(events)[0])
 
     for reward in validator.reward_functions:
-        assert asyncio.run(_apply(reward)) > 0.0, f"{reward.name} scored the reference agent zero"
+        assert asyncio.run(_apply(reward)) > 0.0, f"{reward.name} scored the King zero"
 
 
 # ---- fix: the evidence a source needs to be scoreable at all ---
 
-def test_the_reference_agent_cites_every_source(reference_answer):
+def test_the_king_cites_every_source(king_answer):
     """Without ``highlights`` and ``text`` a source is dropped before it is judged -- it does not
     score badly, it does not score at all."""
-    sources = reference_answer["search_results"]
+    sources = king_answer["search_results"]
     assert sources
     for source in sources:
         assert source.get("highlights"), source
@@ -643,62 +646,6 @@ def test_the_penalty_matrix_covers_the_penalties_it_can_provoke(task):
     for name in uncovered:
         penalty = next(p for p in validator.penalty_functions if p.name == name)
         assert _applied(penalty, synapse) == 1.0, f"{name} fires on a healthy answer"
-
-
-# ---- GATE: the seeded King is a valid incumbent ---
-
-# The King lives under kings/, NOT submissions/. submissions/ is the miner-owned tree -- a seeded
-# incumbent placed there would read as a miner's PR, and the lane would be competing against a
-# submission nobody made.
-KING = (Path(__file__).resolve().parents[2] / "kata" / "kings" / "sn22__desearch" / "miner"
-        / "agent.py")
-
-
-@pytest.fixture
-def king_answer(monkeypatch):
-    """The seeded King's real output, produced by the real harness."""
-    from kata_sn22_sdk import broker as sdk_broker
-    from kata_sn22_sdk import harness
-
-    monkeypatch.setenv("SN22_BROKER_URL", "http://broker.internal")
-    monkeypatch.setenv("SN22_BROKER_CAPABILITY", "kcap_" + "0" * 32)
-    monkeypatch.delenv("SN22_RELAY_ENDPOINT", raising=False)
-    monkeypatch.setattr(sdk_broker.BrokerClient, "_call",
-                        lambda self, operation, payload: {"results": WEB_RESULTS})
-    return harness.run(AI_TASK_INPUT, agent_path=str(KING), stderr=io.StringIO())
-
-
-def test_the_seeded_king_scores(task, king_answer):
-    """A King that scored zero would make every duel meaningless.
-
-    The incumbent is the thing every challenger is normalised against -- ``combine_pool_scores``
-    divides by the pool total across BOTH contestants -- so an incumbent that scores nothing turns
-    the ranking into a formality, and it would look like unusually strong challengers rather than a
-    broken King. Scored against a fabricator, whose links the evaluator's own fetch cannot find.
-    """
-    from kata_sn22 import production_scorer as scorer
-
-    fabricated = {**king_answer, "search_results": [
-        {**source, "link": source["link"].replace("source-", "fabricated-")}
-        for source in king_answer["search_results"]]}
-
-    score = asyncio.run(scorer.score_pool(
-        pool="ai_search:fast", tasks=(task,),
-        king_answers={"t0": king_answer}, challenger_answers={"t0": fabricated},
-        deep_task_ids=frozenset({"t0"}), judge=_judge, fetch_pages=_fetch_pages,
-        process_times={(0, "t0"): 3.0, (1, "t0"): 3.0}))
-
-    assert score.king.q_weight > 0.0, "the seeded King scores nothing"
-    assert score.challenger.q_weight == 0.0
-
-
-def test_the_seeded_king_cites_every_source_it_returns(king_answer):
-    """Evidence is what makes a source count at all. An uncited King is a zero-scoring King, and
-    the failure is silent: sources are dropped before judging rather than marked down."""
-    sources = king_answer["search_results"]
-    assert sources, "the King returned no sources"
-    assert all(source.get("highlights") for source in sources), (
-        "the King returned a source with no highlights; it would be dropped before judging")
 
 
 def test_the_seeded_king_emits_its_prose_by_role(king_answer):

@@ -231,8 +231,16 @@ def test_the_documented_failure_categories_are_the_ones_the_bot_publishes():
                     f"category the bot publishes")
 
 
-def test_the_reference_submission_is_the_one_the_protocol_points_at():
+def test_the_agent_the_protocol_points_at_is_the_reigning_king():
+    """Miners are told to copy the King itself, not a separate shipped example.
+
+    Two agents would be two things to keep correct, and they drift: a miner would copy the example
+    while being scored against the King. Pointing at the King makes that impossible by construction.
+    ``submissions/`` holds miners' entries and nothing else.
+    """
     body = _text(PROTOCOL)
-    referenced = "submissions/sn22__desearch/miner/example-20260727-01/agent.py"
-    assert referenced in body
-    assert (KATA / referenced).is_file(), "the protocol points at a submission that does not exist"
+    referenced = "kings/sn22__desearch/miner/agent.py"
+    assert referenced in body, "the protocol does not point miners at the King"
+    assert (KATA / referenced).is_file(), "the protocol points at a King that does not exist"
+    assert "submissions/sn22__desearch/miner/example" not in body, (
+        "the protocol still points at the removed example submission")

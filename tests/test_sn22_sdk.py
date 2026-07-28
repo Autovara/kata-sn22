@@ -35,8 +35,11 @@ from kata_sn22_sdk import (
 )
 from kata_sn22_sdk import broker as sdk_broker
 
-REFERENCE = (Path(__file__).resolve().parents[2] / "kata" / "submissions" / "sn22__desearch"
-             / "miner" / "example-20260727-01" / "agent.py")
+# What the protocol tells miners to copy: the reigning King, under kings/. There is no shipped
+# example submission -- a second agent to keep correct is one miners would copy while being scored
+# against the other.
+REFERENCE = (Path(__file__).resolve().parents[2] / "kata" / "kings" / "sn22__desearch" / "miner"
+             / "agent.py")
 
 #: The four pools, exactly as a production epoch runs them.
 POOL_TASKS = {
@@ -509,9 +512,15 @@ def test_the_version_one_calibration_agent_is_not_shown_to_miners():
     assert calibration.is_file(), "the sandbox's end-to-end tests have no agent to drive"
     assert "SANDBOX path only" in calibration.read_text(encoding="utf-8")
 
-    submissions = REFERENCE.parents[1]
-    for shipped in submissions.rglob("agent.py"):
-        assert "kata_sn22_sdk" in shipped.read_text(encoding="utf-8"), shipped
+    # Both trees a miner ever sees: the King they are told to copy, and any entries already in
+    # submissions/. Scanning REFERENCE.parents[1] would now cover only kings/, and a version-1
+    # agent sitting in submissions/ -- the tree miners actually write to -- would go unnoticed.
+    kata = Path(__file__).resolve().parents[2] / "kata"
+    shown = list((kata / "kings").rglob("sn22__desearch/**/agent.py"))
+    shown += list((kata / "submissions" / "sn22__desearch").rglob("agent.py"))
+    assert shown, "no SN22 agent is shown to miners at all"
+    for agent in shown:
+        assert "kata_sn22_sdk" in agent.read_text(encoding="utf-8"), agent
 
 
 def test_the_sdk_imports_only_the_standard_library():

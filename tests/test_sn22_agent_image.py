@@ -28,8 +28,9 @@ import pytest
 AGENT_DIR = Path(__file__).resolve().parents[1] / "deploy" / "sn22-agent"
 DOCKERFILE = (AGENT_DIR / "Dockerfile").read_text(encoding="utf-8")
 BUILD_SH = (AGENT_DIR / "build.sh").read_text(encoding="utf-8")
-REFERENCE = (Path(__file__).resolve().parents[2] / "kata" / "submissions" / "sn22__desearch"
-             / "miner" / "example-20260727-01")
+# The reigning King's bundle. It lives under kings/, not submissions/ -- submissions/ holds
+# miners' entries only.
+REFERENCE = (Path(__file__).resolve().parents[2] / "kata" / "kings" / "sn22__desearch" / "miner")
 
 IMAGE = os.environ.get("KATA_SN22_AGENT_IMAGE", "").strip()
 
