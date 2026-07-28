@@ -1,0 +1,5 @@
+# The only four packages the trusted runner asks for. See requirements-upstream.txt.
+pydantic>=2.0
+numpy
+pytz
+tiktoken

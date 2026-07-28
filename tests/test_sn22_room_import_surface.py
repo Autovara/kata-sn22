@@ -33,6 +33,20 @@ ALLOWED_THIRD_PARTY = {"kata"}
 #: Reached only by tests and ``tools/record_parity.py``. See the module docstring.
 DEVELOPMENT_ONLY_MODULES = {"kata_sn22.parity"}
 
+#: TRUSTED-RUNNER modules. These deliberately import ``pydantic``, ``numpy``, ``pytz`` and
+#: ``tiktoken`` — the four packages upstream's own scoring semantics depend on — because since
+#: Phase F production executes the real vendored SN22 validator rather than a port of it.
+#:
+#: They are exempt from the standard-library rule and must NOT become reachable from the plugin
+#: entry point, which is what the agent-facing surface is built from. The distinction is the whole
+#: of ``docs/DECISION-bittensor-not-in-the-room.md`` as amended: the agent image carries none of
+#: this, and the trusted runner carries exactly this and no transport.
+TRUSTED_RUNNER_MODULES = {
+    "kata_sn22.upstream_runtime",
+    "kata_sn22.neuron_adapter",
+    "kata_sn22.production_scorer",
+}
+
 
 def _imports(path: Path) -> set[str]:
     """Top-level package name of every import in a file, including function-local ones.
@@ -97,7 +111,27 @@ def test_the_room_never_imports_the_parity_harness():
         f"one import away from live scoring.")
 
 
-@pytest.mark.parametrize("module", sorted(_runtime_closure()))
+def test_the_trusted_runner_modules_are_not_reachable_from_the_entry_point():
+    """The agent-facing surface must not acquire the scorer's dependencies.
+
+    Not a style rule. The agent image ships no installer, so a plugin closure that reached
+    ``upstream_runtime`` would fail at ``import`` inside a sealed room, on a duel, with no way to
+    install what it wanted.
+    """
+    leaked = _runtime_closure() & TRUSTED_RUNNER_MODULES
+    assert not leaked, (
+        f"{sorted(leaked)} is reachable from the plugin entry point. Those modules execute the "
+        f"real vendored upstream and import pydantic/numpy/pytz/tiktoken; the agent-facing "
+        f"surface is standard library only and has no installer to fix it with.")
+
+
+def test_the_trusted_runner_modules_still_exist():
+    """A guard on the guard: renaming one would make the check above pass vacuously."""
+    for module in TRUSTED_RUNNER_MODULES:
+        assert (PACKAGE / f"{module.split('.')[-1]}.py").exists(), module
+
+
+@pytest.mark.parametrize("module", sorted(_runtime_closure() - TRUSTED_RUNNER_MODULES))
 def test_every_runtime_module_imports_only_the_standard_library(module):
     """bittensor, pydantic, numpy, aiohttp, apify_client, openai: none of them belong in the room.
 

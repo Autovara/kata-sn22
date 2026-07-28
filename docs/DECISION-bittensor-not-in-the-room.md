@@ -1,6 +1,45 @@
 # Decision: `bittensor` does not go into the attested room image
 
-**Status:** decided, Phase A. **Enforced by:** `tests/test_sn22_room_import_surface.py`.
+**Status:** decided Phase A; **amended in Phase F — read the amendment first.**
+**Enforced by:** `tests/test_sn22_room_import_surface.py`.
+
+---
+
+## Amendment (Phase F): this decision now applies to the AGENT image, not to the trusted runner
+
+The claim below — "the runtime import closure is standard library only" — was true of everything in
+Phase A, when Kata scored SN22 with its own port of the reward arithmetic.
+
+Phase F changed the requirement, not the reasoning. Production must execute the **real vendored
+upstream validator**, because a port that computes something close to upstream's number is a port
+that decides duels on a number nobody upstream would recognise. That means the trusted runner now
+carries four packages upstream's own scoring semantics depend on:
+
+| Package | Why it cannot be adapted away |
+|---|---|
+| `pydantic` | validates the protocol models the scorer reads |
+| `numpy` | *is* the arithmetic |
+| `pytz` | decides what "within date range" means for the date-range penalty |
+| `tiktoken` | counts the tokens the streaming penalty charges for |
+
+**`bittensor` is still absent, and so is every other transport.** `wandb`, `aiohttp`, `openai`,
+`apify_client`, `aiosqlite`, `redis` and the chain client are all replaced by
+`kata_sn22.upstream_runtime`, which follows one rule: *adapt the transport, never the arithmetic*.
+`assert_scoring_is_real()` checks after loading that all 22 scoring modules are the real vendored
+files, so an edit that adapts one module too many fails a test rather than silently returning a stub
+where a number should be.
+
+**What is unchanged:** the **agent image** is still standard library plus the SDK, with no installer.
+Everything an untrusted agent can reach is exactly as described below. That is the part of this
+decision that was protecting something, and it still holds.
+
+One thing worth recording, because it is the argument for the whole design: `tiktoken` was
+originally classified as infrastructure and adapted. The adapter *raises* rather than returning
+something plausible, and it fired on the very first import — before any score was computed. A
+permissive stub would have returned zero tokens forever and the streaming penalty would have
+measured nothing, silently.
+
+---
 
 ## The question
 
@@ -13,7 +52,7 @@ validator.
 So: does the sealed room have to carry that dependency tree in order to score the way upstream
 scores?
 
-## The answer
+## The answer (Phase A, still true of the agent image)
 
 No. And it is not a preference — it is already true, and now checked.
 

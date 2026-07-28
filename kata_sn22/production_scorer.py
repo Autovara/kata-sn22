@@ -193,6 +193,63 @@ class EvidenceRouter:
         }
 
 
+@dataclass
+class TweetRouter:
+    """Routes upstream's tweet re-scrape through the broker's ``tweet-rescrape`` operation.
+
+    Same seam and same reasoning as :class:`EvidenceRouter`. Upstream's
+    ``TwitterBasicSearchContentRelevanceModel`` does not accept verified tweets -- it re-scrapes
+    every tweet a contestant returned and compares it field by field, which is why an edited tweet
+    scores zero rather than less. That comparison has to run.
+
+    Only ``TwitterScraperActor.get_tweets`` is replaced: the raw items come back from the broker
+    and upstream's own ``toTwitterScraperTweet`` maps them, so the model the comparison reads is
+    built by upstream's code from upstream's fields.
+    """
+
+    #: ``(tweet_ids) -> [raw tweet dict]``. The broker's ``tweet-rescrape`` evaluator operation.
+    rescrape: object
+    statuses: dict = field(default_factory=dict)
+
+    def install(self) -> None:
+        actor_module = upstream_module("neurons.validators.apify.twitter_scraper_actor")
+        router = self
+
+        async def _get_tweets(_self, urls: list, add_user_info: bool = True) -> list:
+            return await router._fetch(actor_module, urls)
+
+        actor_module.TwitterScraperActor.get_tweets = _get_tweets
+
+    async def _fetch(self, actor_module, urls: list) -> list:
+        utils_module = upstream_module("neurons.validators.apify.twitter_scraper_actor")
+        extract = utils_module.TwitterUtils.extract_tweet_id
+        tweet_ids = [extract(url) for url in urls]
+        tweet_ids = [tweet_id for tweet_id in tweet_ids if tweet_id]
+        if not tweet_ids:
+            return []
+        try:
+            items = await _maybe_await(self.rescrape(tweet_ids))
+        except Exception as exc:  # noqa: BLE001 - classified, never raised into a verdict
+            self.statuses["apify"] = _classify(exc)
+            return []
+        self.statuses.setdefault("apify", CredentialStatus.OK)
+
+        tweets = []
+        for item in items or []:
+            # Upstream's own skip conditions, then upstream's own mapper. A tweet Kata built itself
+            # would be a tweet the field-by-field comparison was checking against Kata's idea of the
+            # shape rather than the provider's.
+            if not isinstance(item, dict) or item.get("noResults") or not item.get("url"):
+                continue
+            if item.get("type") == "mock_tweet":
+                continue
+            try:
+                tweets.append(actor_module.toTwitterScraperTweet(item))
+            except Exception:  # noqa: BLE001 - one malformed item is not a failed re-scrape
+                continue
+        return tweets
+
+
 # ---- streaming granularity, canonicalised on the trusted side ---
 
 #: Upstream's ``MAX_TOKENS_PER_CHUNK``. A chunk above it costs 0.01 per excess token, summed across
@@ -437,14 +494,15 @@ class PoolScore:
 
 
 async def score_pool(*, pool: str, tasks: tuple, king_answers: dict, challenger_answers: dict,
-                     deep_task_ids: frozenset, judge, fetch_pages,
+                     deep_task_ids: frozenset, judge, fetch_pages, rescrape_tweets=None,
                      process_times: dict | None = None) -> PoolScore:
     """Score one pool for both contestants with the real upstream validator.
 
     ``king_answers`` / ``challenger_answers`` map ``task_id`` to a version-2 answer document.
-    ``judge`` is ``(messages) -> str`` and ``fetch_pages`` is ``(urls) -> {url: record}`` -- the
-    broker's two evaluator operations. Both are transports: upstream decides what to ask and what to
-    fetch, and this only decides which credential pays for it.
+    ``judge``, ``fetch_pages`` and ``rescrape_tweets`` are the broker's three evaluator operations.
+    All three are transports: upstream decides what to ask, what to fetch and which tweets to
+    re-scrape, and this only decides which credential pays for it. ``rescrape_tweets`` is required
+    for the X pool and unused by the others.
     """
     load()
     search_type = POOL_SEARCH_TYPE.get(pool)
@@ -455,6 +513,8 @@ async def score_pool(*, pool: str, tasks: tuple, king_answers: dict, challenger_
     router.install()
     evidence_router = EvidenceRouter(fetch_pages=fetch_pages)
     evidence_router.install()
+    tweet_router = TweetRouter(rescrape=rescrape_tweets or _no_rescrape)
+    tweet_router.install()
 
     validator = _validator_for(search_type)
     process_times = process_times or {}
@@ -488,8 +548,18 @@ async def score_pool(*, pool: str, tasks: tuple, king_answers: dict, challenger_
         pool=pool,
         king=_pool_result(by_uid.get(KING_UID)),
         challenger=_pool_result(by_uid.get(CHALLENGER_UID)),
-        credentials=_merge_statuses(router, evidence_router),
+        credentials=_merge_statuses(router, evidence_router, tweet_router),
     )
+
+
+async def _no_rescrape(_tweet_ids):
+    """No tweet verification was configured.
+
+    Returns nothing rather than raising: for an AI pool the re-scrape is never reached, and for an X
+    pool an empty result means no tweet passes verification -- which is the correct reading of "we
+    could not check", not a crash the room would have to interpret.
+    """
+    return []
 
 
 def _merge_statuses(*routers) -> CredentialReport:

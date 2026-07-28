@@ -462,3 +462,184 @@ def test_production_does_not_import_the_seven_signal_comparator():
     assert "kata_sn22.scoring" not in imported
     for banned in ("RANK_SIGNALS", "compare_signals", "score_attempts", "Signals"):
         assert banned not in source, banned
+
+
+# ---- the tweet re-scrape, routed through the broker ---
+
+#: A complete Apify item. Upstream's ``toTwitterScraperTweet`` is strict -- it rejects a thin one --
+#: so a fixture that omitted fields would silently produce no tweets and look like a routing bug.
+def _tweet_item(tweet_id: str) -> dict:
+    return {
+        "url": f"https://x.com/a/status/{tweet_id}", "id": tweet_id, "text": "hello",
+        "createdAt": "2024-01-01", "likeCount": 1, "retweetCount": 0, "replyCount": 0,
+        "quoteCount": 0, "viewCount": 1, "bookmarkCount": 0, "isRetweet": False,
+        "isQuote": False, "lang": "en",
+        "author": {"id": "u1", "userName": "a", "name": "A", "createdAt": "2020-01-01",
+                   "followers": 1, "following": 1, "favouritesCount": 0, "listedCount": 0,
+                   "mediaCount": 0, "statusesCount": 1, "isVerified": False,
+                   "isBlueVerified": False, "profilePicture": "", "coverPicture": "",
+                   "description": "", "location": "", "url": "", "canDm": False},
+    }
+
+
+def test_the_tweet_rescrape_goes_through_the_broker_and_upstreams_own_mapper():
+    """The model the field-by-field comparison reads must be built by UPSTREAM's mapper from the
+    provider's fields. One built by Kata would be checking a contestant against Kata's idea of a
+    tweet rather than the provider's."""
+    from kata_sn22 import production_scorer as scorer
+
+    requested: list = []
+
+    async def _rescrape(tweet_ids):
+        requested.append(list(tweet_ids))
+        return [_tweet_item(tweet_id) for tweet_id in tweet_ids]
+
+    router = scorer.TweetRouter(rescrape=_rescrape)
+    router.install()
+    actor = upstream_runtime.upstream_module(
+        "neurons.validators.apify.twitter_scraper_actor")
+
+    tweets = asyncio.run(
+        actor.TwitterScraperActor().get_tweets(urls=["https://x.com/a/status/12345"]))
+
+    assert requested == [["12345"]], "the broker was not asked for the tweet the agent returned"
+    assert [tweet.id for tweet in tweets] == ["12345"]
+    assert isinstance(tweets[0], actor.TwitterScraperTweet)
+    assert router.statuses["apify"].value == "ok"
+
+
+def test_one_malformed_item_is_skipped_rather_than_failing_the_rescrape():
+    """A provider returning one odd row is not a credential failure, and treating it as one would
+    defer a duel over a single tweet."""
+    from kata_sn22 import production_scorer as scorer
+
+    async def _rescrape(tweet_ids):
+        return [{"url": "https://x.com/a/status/1", "id": "1"},      # too thin for the mapper
+                _tweet_item("2")]
+
+    router = scorer.TweetRouter(rescrape=_rescrape)
+    router.install()
+    actor = upstream_runtime.upstream_module(
+        "neurons.validators.apify.twitter_scraper_actor")
+
+    tweets = asyncio.run(actor.TwitterScraperActor().get_tweets(
+        urls=["https://x.com/a/status/1", "https://x.com/a/status/2"]))
+
+    assert [tweet.id for tweet in tweets] == ["2"]
+    assert router.statuses["apify"].value == "ok"
+
+
+def test_a_failed_rescrape_is_recorded_as_a_credential_status():
+    from kata_sn22 import production_scorer as scorer
+
+    async def _broken(_tweet_ids):
+        raise RuntimeError("apify is down")
+
+    router = scorer.TweetRouter(rescrape=_broken)
+    router.install()
+    actor = upstream_runtime.upstream_module(
+        "neurons.validators.apify.twitter_scraper_actor")
+
+    assert asyncio.run(
+        actor.TwitterScraperActor().get_tweets(urls=["https://x.com/a/status/1"])) == []
+    assert router.statuses["apify"].value != "ok"
+
+
+# ---- GATE: every penalty fires in one case and rests in another ---
+#
+# A penalty that never fires is one Kata has quietly disabled by building its input wrong -- exactly
+# what happened to the streaming penalty, which fired on EVERY contestant including the reference
+# agent. A penalty that never rests is one no honest agent can avoid. Both are silent, and both make
+# a duel measure something other than the answers.
+
+def _healthy_answer() -> dict:
+    """An answer that should rest every AI penalty. The baseline the cases below deviate from."""
+    sources = [{"title": f"Source {i}", "link": f"https://source-{i}.test/p",
+                "snippet": SNIPPET, "highlights": [SNIPPET], "text": SNIPPET}
+               for i in range(10)]
+    summary = "**2024 emissions**\n\n" + "\n".join(
+        f"- [Source {i}](https://source-{i}.test/p): {SNIPPET}" for i in range(10))
+    return {"completion": summary, "text_chunks": {"summary": [summary]},
+            "search_results": sources, "miner_tweets": []}
+
+
+def _applied(penalty, synapse) -> float:
+    import numpy as np
+
+    async def _run():
+        _raw, _adjusted, applied = await penalty.apply_penalties([synapse], np.array([0]), {})
+        return float(np.asarray(applied)[0])
+
+    return asyncio.run(_run())
+
+
+#: ``name -> (mutate the answer, unused, process_time)``. Each provokes one penalty.
+AI_PENALTY_CASES = {
+    "streaming_penalty": (
+        lambda a: {**a, "text_chunks": {}, "completion": ""}, None, 3.0),
+    "timeout_penalty": (lambda a: a, None, 10_000.0),
+    "min_realistic_time_penalty": (lambda a: a, None, 0.0001),
+    "count_penalty": (
+        lambda a: {**a, "search_results": a["search_results"][:1]}, None, 3.0),
+    "summary_structure_penalty": (
+        lambda a: {**a, "text_chunks": {"summary": ["no markdown links at all"]},
+                   "completion": "no markdown links at all"}, None, 3.0),
+    "duplicate_results_penalty": (
+        lambda a: {**a, "search_results": [a["search_results"][0]] * 10}, None, 3.0),
+    # An EMPTY required field, not a malformed URL. ``_is_valid_search_item`` only URL-validates
+    # raw dicts; for the model objects a synapse carries it requires title/link/snippet non-empty.
+    "result_schema_penalty": (
+        lambda a: {**a, "search_results": [{**s, "snippet": ""}
+                                           for s in a["search_results"]]}, None, 3.0),
+}
+
+
+@pytest.mark.parametrize("penalty_name", sorted(AI_PENALTY_CASES))
+def test_every_ai_penalty_fires_on_a_bad_answer(task, penalty_name):
+    from kata_sn22 import production_scorer as scorer
+
+    mutate, _task_mutation, process_time = AI_PENALTY_CASES[penalty_name]
+    scorer.JudgeRouter(chutes=_judge).install()
+    scorer.EvidenceRouter(fetch_pages=_fetch_pages).install()
+    validator = scorer._validator_for("ai_search")
+    penalty = next(p for p in validator.penalty_functions if p.name == penalty_name)
+
+    synapse = scorer.build_ai_synapse(task, mutate(_healthy_answer()),
+                                      process_time=process_time)
+    assert _applied(penalty, synapse) < 1.0, f"{penalty_name} did not fire on a bad answer"
+
+
+@pytest.mark.parametrize("penalty_name", sorted(AI_PENALTY_CASES))
+def test_every_ai_penalty_rests_on_a_healthy_answer(task, penalty_name):
+    from kata_sn22 import production_scorer as scorer
+
+    scorer.JudgeRouter(chutes=_judge).install()
+    scorer.EvidenceRouter(fetch_pages=_fetch_pages).install()
+    validator = scorer._validator_for("ai_search")
+    penalty = next(p for p in validator.penalty_functions if p.name == penalty_name)
+
+    synapse = scorer.build_ai_synapse(task, _healthy_answer(), process_time=3.0)
+    assert _applied(penalty, synapse) == 1.0, f"{penalty_name} fires on a healthy answer"
+
+
+def test_the_penalty_matrix_covers_the_penalties_it_can_provoke(task):
+    """Names the coverage rather than implying it is complete.
+
+    ``date_range_penalty`` and ``domain_filter_penalty`` need a task carrying a date window or a
+    domain filter, which the epoch generator does produce but this fixture does not; they are
+    covered by the "rests" half only. Saying so beats a matrix that looks exhaustive and is not.
+    """
+    from kata_sn22 import production_scorer as scorer
+
+    validator = scorer._validator_for("ai_search")
+    declared = {penalty.name for penalty in validator.penalty_functions}
+    uncovered = declared - set(AI_PENALTY_CASES)
+
+    assert uncovered == {"date_range_penalty", "domain_filter_penalty"}, uncovered
+    # ...and those two still have to REST on a healthy answer, which is what a silent
+    # always-firing penalty would break.
+    scorer.EvidenceRouter(fetch_pages=_fetch_pages).install()
+    synapse = scorer.build_ai_synapse(task, _healthy_answer(), process_time=3.0)
+    for name in uncovered:
+        penalty = next(p for p in validator.penalty_functions if p.name == name)
+        assert _applied(penalty, synapse) == 1.0, f"{name} fires on a healthy answer"
