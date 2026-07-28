@@ -1,0 +1,68 @@
+services:
+  kata-sn22-runner:
+    # Digest, not a mutable tag: this value is covered by the attested measurement, so a tag would
+    # mean the room could be silently rebuilt under a measurement miners had already sealed to.
+    image: ${KATA_SN22_RUNNER_IMAGE:?Set an immutable runner image, for example registry/runner@sha256:...}
+    ports:
+      # Phala exposes this through its HTTPS gateway so the external validator can reach the room.
+      # /health and /pubkey are public; /run requires a signed, short-lived HMAC request.
+      #
+      # The trusted broker listens on 8100 and is DELIBERATELY not published. It is reachable only
+      # from the sealed internal Docker network the agent container runs on. A published broker
+      # would be a port through which anything holding a capability could spend a contestant's
+      # credentials from outside the room.
+      - "8080:8080"
+    environment:
+      # Shared secret the room requires on /run, so only this validator can invoke a run.
+      # Must match the validator's KATA_ROOM_AUTH_SECRET.
+      - KATA_ROOM_AUTH_SECRET=${KATA_ROOM_AUTH_SECRET}
+      # Keep diagnostics off in production. /pull-test is otherwise a signed POST-only endpoint.
+      - KATA_ROOM_ENABLE_DIAGNOSTICS=false
+      # Signed /run requests are valid for at most 900 seconds. This bounds replay validity; the
+      # profile separately caps each agent process below.
+      - KATA_ROOM_MAX_REQUEST_LIFETIME_SECONDS=${KATA_ROOM_MAX_REQUEST_LIFETIME_SECONDS:-900}
+      # A pool job carries 15 task descriptors plus the submitted bundle, so the request ceiling is
+      # larger than SN60's single-task one. Still bounded: an unbounded body is a denial of service
+      # while it is still being decoded.
+      - KATA_ROOM_MAX_REQUEST_BYTES=${KATA_ROOM_MAX_REQUEST_BYTES:-4194304}
+      - KATA_ROOM_MAX_COMPRESSED_BUNDLE_BYTES=524288
+      - KATA_ROOM_MAX_EXTRACTED_BUNDLE_BYTES=262144
+      - KATA_ROOM_MAX_BUNDLE_FILES=16
+
+      # THERE ARE NO PROVIDER CREDENTIALS HERE, AND THERE MUST NOT BE.
+      #
+      # Every paid SN22 call -- the agent's web search, X search and summary, and the evaluator's
+      # own page fetches, tweet re-scrapes and judge calls -- is funded by the CONTESTANT, from four
+      # keys it sealed to its exact bundle. They arrive per request, are decrypted inside the room,
+      # live only in the trusted broker's memory, and are overwritten when the job ends.
+      #
+      # A key here would be a fallback, and a lane with a fallback keeps evaluating a contestant
+      # that stopped paying -- at the operator's expense. That is the single rule this lane exists
+      # to enforce.
+
+      # Registry read:packages login, so the room can pull the agent image (sealed secret).
+      - GHCR_USER=${GHCR_USER}
+      - GHCR_TOKEN=${GHCR_TOKEN}
+
+      # The ONE image an SN22 submission runs in, pinned by digest. Unlike SN60 there is no JSON map
+      # of project images: an SN22 submission is a plain agent.py, so there is exactly one container
+      # to build and one digest to approve.
+      - KATA_SN22_TEE_AGENT_IMAGE=${KATA_SN22_TEE_AGENT_IMAGE:?Set the immutable agent image digest}
+      # Ceilings for that container. A search agent that allocated without bound would take the room
+      # down for the contestant scheduled after it.
+      - KATA_SN22_TEE_AGENT_MEMORY=${KATA_SN22_TEE_AGENT_MEMORY:-2g}
+      - KATA_SN22_TEE_AGENT_CPUS=${KATA_SN22_TEE_AGENT_CPUS:-2}
+
+      # One agent process, bounded independently of the whole pool job. Upstream's own serving
+      # budget per task is 15s or 30s; this is the hard wall for a stuck process, not a scoring
+      # deadline. The ordering that matters: task budget < this < request lifetime.
+      - KATA_TEE_AGENT_EXECUTION_TIMEOUT_SECONDS=${KATA_TEE_AGENT_EXECUTION_TIMEOUT_SECONDS:-840}
+
+      # tiktoken's BPE table is baked into the image, because the room has no egress and the
+      # streaming penalty cannot fail on a duel for want of a file.
+      - TIKTOKEN_CACHE_DIR=/opt/tiktoken
+    volumes:
+      # dstack guest-agent socket -- lets the room call get_quote and get_key.
+      - /var/run/dstack.sock:/var/run/dstack.sock
+      # docker socket -- lets the runner pull and run the agent image inside the room.
+      - /var/run/docker.sock:/var/run/docker.sock
