@@ -35,7 +35,9 @@
     "",
     "The operator supplies them, and kata-subnets-deploy REFUSES to render a unit without all five",
     "(see REQUIRED_OPERATOR_ENV). Putting placeholders here instead would ship a file that looks",
-    "configured and is not."
+    "configured and is not.",
+    "",
+    "round_gap_sec is 60, the installer's floor -- not a cost decision. It is the idle gap AFTER a round ends, and a round with no pending PR exits in about a second, so this is how long a miner's PR can sit unnoticed. Challenges are timer-driven only: the webhook does intake, screening and queueing, and never starts a duel. At the previous 900 a submission could wait a quarter of an hour with the lane reporting itself healthy and idle."
   ],
   "schema_version": 1,
   "subnet_id": 22,
@@ -50,7 +52,7 @@
   },
   "unit_params": {
     "timeout_start_sec": 3600,
-    "round_gap_sec": 900,
+    "round_gap_sec": 60,
     "requires_docker": false
   }
 }
