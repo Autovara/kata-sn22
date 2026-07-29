@@ -44,7 +44,7 @@ def _authoritative(files: dict) -> str:
     """The room's construction, transcribed from ``kata-tee-runner/room/bundle.py``.
 
     Transcribed rather than imported: the two repositories ship as separate images and kata-sn22's
-    runtime is stdlib-only by design (see ``docs/DECISION-bittensor-not-in-the-room.md``), so there
+    runtime is stdlib-only by design (see the README's "Why bittensor is not in the room"), so there
     is no import that could tie them together at runtime. A transcription plus a pinned vector is
     what stands in for that.
     """

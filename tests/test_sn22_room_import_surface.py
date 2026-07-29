@@ -41,7 +41,7 @@ DEVELOPMENT_ONLY_MODULES = {"kata_sn22.parity"}
 #: validator host and inside the trusted runner, both of which carry those packages. They are
 #: exempt from the standard-library rule below. What must stay standard-library-only is the AGENT
 #: image, which is a different artifact — see ``test_the_agent_image_ships_only_the_sdk...`` and
-#: ``docs/DECISION-bittensor-not-in-the-room.md`` as amended.
+#: the README's "Why bittensor is not in the room" as amended.
 TRUSTED_RUNNER_MODULES = {
     "kata_sn22.upstream_runtime",
     "kata_sn22.neuron_adapter",

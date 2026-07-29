@@ -25,7 +25,7 @@ it is: it serves the parity evidence, which must be able to diverge from product
 evidence about it.
 
 **This is a deliberate reversal of a Phase A decision.**
-``docs/DECISION-bittensor-not-in-the-room.md`` recorded that the room's plugin closure was
+the README's "Why bittensor is not in the room" recorded that the room's plugin closure was
 standard-library-only. That is still true of the AGENT image and of everything the agent can reach.
 It is no longer true of the trusted runner, which now carries ``pydantic``, ``numpy``, ``pytz`` and
 ``tiktoken`` — the four packages upstream's own scoring semantics depend on — plus the vendored
