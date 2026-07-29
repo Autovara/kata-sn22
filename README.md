@@ -20,7 +20,7 @@ the transports; it computes no score of its own.
 
 | Start here | For |
 |---|---|
-| [`kata/docs/SN22-PROTOCOL.md`](../kata/docs/SN22-PROTOCOL.md) | writing a submission |
+| [`docs/SN22-PROTOCOL.md`](docs/SN22-PROTOCOL.md) | writing a submission |
 | [`SN22-OPERATOR-GUIDE.md`](SN22-OPERATOR-GUIDE.md) | running the lane |
 | [`docs/DECISION-bittensor-not-in-the-room.md`](docs/DECISION-bittensor-not-in-the-room.md) | why the images contain what they contain |
 | `../KATA-ARCHITECTURE.md` §6.3 | how this lane fits the platform |

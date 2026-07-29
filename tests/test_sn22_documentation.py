@@ -24,7 +24,9 @@ BOT = REPO.parent / "kata-bot"
 
 README = REPO / "README.md"
 OPERATOR_GUIDE = REPO / "SN22-OPERATOR-GUIDE.md"
-PROTOCOL = KATA / "docs" / "SN22-PROTOCOL.md"
+#: This lane's wire protocol. It lived in `kata/docs/` until the engine repo was made
+#: subnet-agnostic; a subnet's own protocol is the subnet's to document.
+PROTOCOL = REPO / "docs" / "SN22-PROTOCOL.md"
 ENV_EXAMPLE = BOT / ".env.example"
 
 
@@ -38,7 +40,7 @@ def _text(path: Path) -> str:
 DOCUMENTS = {
     "kata-sn22/README.md": README,
     "kata-sn22/SN22-OPERATOR-GUIDE.md": OPERATOR_GUIDE,
-    "kata/docs/SN22-PROTOCOL.md": PROTOCOL,
+    "docs/SN22-PROTOCOL.md": PROTOCOL,
 }
 
 
