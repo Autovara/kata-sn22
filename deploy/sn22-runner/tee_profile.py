@@ -18,6 +18,7 @@ two different challenges run at two different moments.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -58,6 +59,66 @@ MAX_AGENT_STDERR_BYTES = 16 * 1024
 #: tasks happened to contend with each other would post a worse process_time for a reason unrelated
 #: to its answers.
 TASK_CONCURRENCY = 3
+
+
+def _agent_container_name(job_id: str, task_index: int, task_id: object) -> str:
+    identity = f"{job_id}\0{task_index}\0{task_id}".encode("utf-8")
+    return "kata-sn22-" + hashlib.sha256(identity).hexdigest()[:20]
+
+
+def _bundle_volume_name(container: str) -> str:
+    return container + "-bundle"
+
+
+def _docker_error(completed) -> str:
+    stderr = completed.stderr or ""
+    stdout = completed.stdout or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode("utf-8", errors="replace")
+    return (stderr.strip() or stdout.strip() or f"docker exited {completed.returncode}")[:500]
+
+
+def _remove_agent_container(container: str, *, allow_missing: bool) -> None:
+    try:
+        removed = docker(["rm", "--force", container], timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"could not remove SN22 agent container {container}: {exc}") from exc
+    if removed.returncode == 0:
+        return
+    detail = _docker_error(removed)
+    if allow_missing and "no such container" in detail.lower():
+        return
+    raise RuntimeError(f"could not remove SN22 agent container {container}: {detail}")
+
+
+def _remove_bundle_volume(volume: str, *, allow_missing: bool) -> None:
+    try:
+        removed = docker(["volume", "rm", "--force", volume], timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"could not remove SN22 bundle volume {volume}: {exc}") from exc
+    if removed.returncode == 0:
+        return
+    detail = _docker_error(removed)
+    if allow_missing and "no such volume" in detail.lower():
+        return
+    raise RuntimeError(f"could not remove SN22 bundle volume {volume}: {detail}")
+
+
+def _remove_agent_resources(container: str, staging: str, volume: str) -> None:
+    errors = []
+    for remove, name in (
+        (_remove_agent_container, container),
+        (_remove_agent_container, staging),
+        (_remove_bundle_volume, volume),
+    ):
+        try:
+            remove(name, allow_missing=True)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+    if errors:
+        raise RuntimeError("; ".join(errors))
 
 
 def build_broker() -> Broker:
@@ -156,8 +217,12 @@ class Sn22TeeProfile:
         try:
             capability = self._broker.issue(job_id, role=ROLE_AGENT).token
             attempts = self._run_pool(
-                bundle_root=bundle_root, tasks=tasks, broker=broker_url(),
-                capability=capability)
+                bundle_root=bundle_root,
+                tasks=tasks,
+                broker=broker_url(),
+                capability=capability,
+                job_id=job_id,
+            )
             # SCORING happens here, inside the room, while the evaluator capability is still live.
             # It has to: the pool tuple is what the attestation binds, and a tuple computed on the
             # host afterwards would be a number the quote does not cover.
@@ -286,7 +351,7 @@ class Sn22TeeProfile:
         return score.king.as_dict(), score.credentials.as_dict()
 
     def _run_pool(self, *, bundle_root: str, tasks: list, broker: str,
-                  capability: str) -> list:
+                  capability: str, job_id: str) -> list:
         """Run every task in the pool, at most ``TASK_CONCURRENCY`` at a time.
 
         Bounded rather than unbounded: fifteen agent containers at once would contend for the
@@ -305,11 +370,16 @@ class Sn22TeeProfile:
         def _one(index_and_task):
             index, task = index_and_task
             with tempfile.TemporaryDirectory() as workdir:
-                os.chmod(workdir, 0o777)
                 started = time.monotonic()
                 answer, stderr, timed_out, returncode, truncated = self._run_agent(
-                    bundle_root=bundle_root, workdir=workdir, task=task,
-                    broker=broker, capability=capability)
+                    bundle_root=bundle_root,
+                    workdir=workdir,
+                    task=task,
+                    broker=broker,
+                    capability=capability,
+                    job_id=job_id,
+                    task_index=index,
+                )
             return index, {
                 "task_id": task.get("task_id"),
                 "answer": answer,
@@ -328,17 +398,31 @@ class Sn22TeeProfile:
         return attempts
 
     def _run_agent(self, *, bundle_root: str, workdir: str, task: dict,
-                   broker: str, capability: str) -> tuple[str, str, bool, int, bool]:
+                   broker: str, capability: str, job_id: str,
+                   task_index: int) -> tuple[str, str, bool, int, bool]:
         """Start the untrusted agent container and read its one JSON answer off stdout.
 
         Everything restrictive here is deliberate and mirrors SN60's profile: no network but the
-        sealed inference network, a read-only bundle mount, dropped capabilities, no privilege
-        escalation, and a hard wall-clock bound. The agent talks to the gateway and to nothing else.
+        sealed inference network, a bundle copied into a read-only root filesystem, dropped
+        capabilities, no privilege escalation, and a hard wall-clock bound. The agent talks to the
+        gateway and to nothing else.
+
+        ``docker cp`` into a daemon-managed volume is essential here. The Docker CLI runs inside the
+        room container but talks to the host daemon through its socket; that daemon cannot resolve a
+        bind source created in the room container's filesystem. The volume is populated through a
+        stopped staging container, then mounted read-only into the read-only final container. A
+        named final container also gives the timeout path something exact to kill instead of leaving
+        a daemon-owned process running after the CLI is terminated.
         """
         image = self.agent_image()
         timeout = resolve_agent_execution_timeout_seconds()
-        argv = [
-            docker(), "run", "--rm", "-i",
+        container = _agent_container_name(job_id, task_index, task.get("task_id"))
+        staging = container + "-stage"
+        volume = _bundle_volume_name(container)
+        create_args = [
+            "create",
+            "--name", container,
+            "--interactive",
             "--network", INF_NET,
             "--read-only",
             "--cap-drop", "ALL",
@@ -347,9 +431,10 @@ class Sn22TeeProfile:
             "--memory", os.environ.get(AGENT_MEMORY_ENV, "").strip() or DEFAULT_AGENT_MEMORY,
             "--cpus", os.environ.get(AGENT_CPUS_ENV, "").strip() or DEFAULT_AGENT_CPUS,
             "--pids-limit", "64",
+            "--log-driver", "none",
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m,uid=65532,gid=65532,mode=700",
-            "--mount", f"type=bind,source={bundle_root},target=/bundle,readonly",
-            "--mount", f"type=bind,source={workdir},target=/work",
+            "--tmpfs", "/work:rw,noexec,nosuid,size=16m,uid=65532,gid=65532,mode=700",
+            "--mount", f"type=volume,source={volume},target=/bundle,readonly",
             "--workdir", "/work",
             "--env", f"SN22_BROKER_URL={broker}",
             # A CAPABILITY, not a credential. Everything an agent can do with what it is given here
@@ -367,18 +452,69 @@ class Sn22TeeProfile:
         ]
         stdout_path = os.path.join(workdir, "stdout")
         stderr_path = os.path.join(workdir, "stderr")
-        with open(stdout_path, "wb") as stdout, open(stderr_path, "wb") as stderr:
-            try:
-                completed = subprocess.run(
-                    argv,
-                    input=json.dumps(task).encode("utf-8"),
-                    stdout=stdout,
-                    stderr=stderr,
-                    timeout=timeout,
-                    check=False,
+        _remove_agent_resources(container, staging, volume)
+        try:
+            created_volume = docker(
+                ["volume", "create", "--label", "kata.agent=sn22", volume],
+                timeout=30,
+            )
+            if created_volume.returncode != 0:
+                raise RuntimeError(
+                    "could not create the SN22 bundle volume: "
+                    + _docker_error(created_volume)
                 )
-            except subprocess.TimeoutExpired:
-                return "", "agent exceeded its execution timeout", True, 124, False
+
+            created_staging = docker(
+                [
+                    "create",
+                    "--name", staging,
+                    "--network", "none",
+                    "--mount", f"type=volume,source={volume},target=/bundle",
+                    "--entrypoint", "python",
+                    image,
+                    "-c", "pass",
+                ],
+                timeout=120,
+            )
+            if created_staging.returncode != 0:
+                raise RuntimeError(
+                    "could not create the SN22 bundle staging container: "
+                    + _docker_error(created_staging)
+                )
+
+            copied = docker(
+                ["cp", os.path.join(bundle_root, "."), f"{staging}:/bundle"],
+                timeout=120,
+            )
+            if copied.returncode != 0:
+                raise RuntimeError(
+                    "could not copy the SN22 submission into its bundle volume: "
+                    + _docker_error(copied)
+                )
+            _remove_agent_container(staging, allow_missing=False)
+
+            created = docker(create_args, timeout=120)
+            if created.returncode != 0:
+                raise RuntimeError(
+                    "could not create the SN22 agent container: "
+                    + _docker_error(created)
+                )
+
+            with open(stdout_path, "wb") as stdout, open(stderr_path, "wb") as stderr:
+                try:
+                    completed = docker(
+                        ["start", "--attach", "--interactive", container],
+                        stdin=json.dumps(task),
+                        stdout=stdout,
+                        stderr=stderr,
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    return "", "agent exceeded its execution timeout", True, 124, False
+        finally:
+            # This runs after success, agent failure, Docker failure, and TimeoutExpired. A cleanup
+            # failure is an infrastructure fault, not something to hide behind a contestant score.
+            _remove_agent_resources(container, staging, volume)
         with open(stdout_path, "rb") as stdout:
             raw_answer = stdout.read(MAX_AGENT_OUTPUT_BYTES + 1)
         with open(stderr_path, "rb") as stderr:

@@ -47,18 +47,31 @@ def profile(monkeypatch, tmp_path):
     import tee_profile
 
     calls: list[list[str]] = []
+    answer = json.dumps(
+        {
+            "protocol_version": 1,
+            "task_id": "t000",
+            "summary": "an answer",
+            "results": [],
+            "tweets": [],
+            "citations": [],
+            "usage": {"provider_calls": 1, "tokens": 10},
+        }
+    ).encode()
 
     class _Completed:
         returncode = 0
-        stdout = json.dumps({"protocol_version": 1, "task_id": "t000", "summary": "an answer",
-                             "results": [], "tweets": [], "citations": [],
-                             "usage": {"provider_calls": 1, "tokens": 10}}).encode()
-        stderr = b""
+        stdout = ""
+        stderr = ""
 
-    monkeypatch.setattr(tee_profile, "docker", lambda: "docker")
+    def fake_docker(args, **kwargs):
+        calls.append(["docker", *args])
+        if args[:3] == ["start", "--attach", "--interactive"]:
+            kwargs["stdout"].write(answer)
+        return _Completed()
+
+    monkeypatch.setattr(tee_profile, "docker", fake_docker)
     monkeypatch.setattr(tee_profile, "ensure_broker_network_once", lambda _broker: None)
-    monkeypatch.setattr(tee_profile.subprocess, "run",
-                        lambda argv, **kw: calls.append(list(argv)) or _Completed())
     return tee_profile.Sn22TeeProfile(), calls
 
 
@@ -99,6 +112,14 @@ def _env_of(argv: list[str]) -> dict:
     return env
 
 
+def _agent_create_calls(calls: list[list[str]]) -> list[list[str]]:
+    return [
+        argv
+        for argv in calls
+        if argv[:2] == ["docker", "create"] and "--read-only" in argv
+    ]
+
+
 # ---- the three defects -------------------------------------------------------------------------
 
 def test_a_real_task_reaches_the_agent_at_all(profile, credential, tmp_path):
@@ -132,7 +153,7 @@ def test_no_provider_key_reaches_the_agent_container(profile, credential, tmp_pa
     plugin.run(project_key=TASK, credential=credential, bundle_root=str(tmp_path),
                job_id=JOB_ID, bundle_sha256="c" * 64)
 
-    argv = " ".join(calls[0])
+    argv = " ".join(_agent_create_calls(calls)[0])
     assert MINER_KEY not in argv
     for provider, key in credential.credentials.items():
         assert key not in argv, f"the {provider} key reached the agent container"
@@ -150,7 +171,7 @@ def test_the_agent_gets_a_capability_and_a_broker_url(profile, credential, tmp_p
     plugin.run(project_key=TASK, credential=credential, bundle_root=str(tmp_path),
                job_id=JOB_ID, bundle_sha256="c" * 64)
 
-    env = _env_of(calls[0])
+    env = _env_of(_agent_create_calls(calls)[0])
     assert env["SN22_BROKER_URL"].startswith("http://")
     assert CAPABILITY_RE.fullmatch(env["SN22_BROKER_CAPABILITY"])
 
@@ -166,7 +187,7 @@ def test_the_capability_is_dead_once_the_job_ends(profile, credential, tmp_path)
     plugin.run(project_key=TASK, credential=credential, bundle_root=str(tmp_path),
                job_id=JOB_ID, bundle_sha256="c" * 64)
 
-    token = _env_of(calls[0])["SN22_BROKER_CAPABILITY"]
+    token = _env_of(_agent_create_calls(calls)[0])["SN22_BROKER_CAPABILITY"]
     with pytest.raises(BrokerDenied):
         plugin.broker.dispatch(token, "web-search", {"query": "anything"}, over_http=True)
 
@@ -224,7 +245,7 @@ def test_the_agent_runs_confined(profile, credential, tmp_path):
     plugin.run(project_key=TASK, credential=credential, bundle_root=str(tmp_path),
                job_id=JOB_ID, bundle_sha256="c" * 64)
 
-    argv = calls[0]
+    argv = _agent_create_calls(calls)[0]
     assert "--read-only" in argv
     assert ["--cap-drop", "ALL"] == argv[argv.index("--cap-drop"):argv.index("--cap-drop") + 2]
     assert "no-new-privileges" in argv
@@ -236,8 +257,93 @@ def test_the_agent_runs_confined(profile, credential, tmp_path):
     from room.inference_network import INF_NET
 
     assert argv[argv.index("--network") + 1] == INF_NET
-    # The bundle is READ-ONLY: a submission cannot rewrite its own agent between tasks.
-    assert any("target=/bundle,readonly" in item for item in argv)
+    # No daemon-host bind path exists. A daemon-managed volume is mounted read-only, and the root
+    # filesystem is read-only too.
+    assert not any("type=bind" in item for item in argv)
+    bundle_mount = argv[argv.index("--mount") + 1]
+    assert bundle_mount.startswith("type=volume,source=kata-sn22-")
+    assert bundle_mount.endswith(",target=/bundle,readonly")
+    assert any(item.startswith("/work:rw,noexec,nosuid") for item in argv)
+    assert ["--log-driver", "none"] == (
+        argv[argv.index("--log-driver"):argv.index("--log-driver") + 2]
+    )
+
+
+def test_the_bundle_is_copied_into_a_named_container_before_start(
+    profile, credential, tmp_path
+):
+    plugin, calls = profile
+    (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
+
+    plugin.run(
+        project_key=TASK,
+        credential=credential,
+        bundle_root=str(tmp_path),
+        job_id=JOB_ID,
+        bundle_sha256="c" * 64,
+    )
+
+    assert [argv[1] for argv in calls] == [
+        "rm",
+        "rm",
+        "volume",
+        "volume",
+        "create",
+        "cp",
+        "rm",
+        "create",
+        "start",
+        "rm",
+        "rm",
+        "volume",
+    ]
+    create = _agent_create_calls(calls)[0]
+    container = create[create.index("--name") + 1]
+    staging = container + "-stage"
+    volume = container + "-bundle"
+    assert container.startswith("kata-sn22-")
+    assert calls[5] == ["docker", "cp", f"{tmp_path}/.", f"{staging}:/bundle"]
+    assert calls[8] == ["docker", "start", "--attach", "--interactive", container]
+    assert ["docker", "rm", "--force", container] in calls
+    assert ["docker", "rm", "--force", staging] in calls
+    assert ["docker", "volume", "rm", "--force", volume] in calls
+
+
+def test_a_timed_out_agent_is_force_removed(profile, tmp_path, monkeypatch):
+    import tee_profile
+
+    plugin, calls = profile
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
+
+    class _Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def timeout_on_start(args, **kwargs):
+        calls.append(["docker", *args])
+        if args[:3] == ["start", "--attach", "--interactive"]:
+            raise tee_profile.subprocess.TimeoutExpired(args, kwargs["timeout"])
+        return _Completed()
+
+    monkeypatch.setattr(tee_profile, "docker", timeout_on_start)
+    result = plugin._run_agent(
+        bundle_root=str(tmp_path),
+        workdir=str(workdir),
+        task=json.loads(TASK),
+        broker="http://broker:8100",
+        capability="kcap_" + "a" * 32,
+        job_id=JOB_ID,
+        task_index=0,
+    )
+
+    assert result[2:4] == (True, 124)
+    create = _agent_create_calls(calls)[0]
+    container = create[create.index("--name") + 1]
+    assert ["docker", "rm", "--force", container] in calls[calls.index(create):]
+    assert calls[-1] == ["docker", "volume", "rm", "--force", container + "-bundle"]
 
 
 def test_the_agent_image_must_be_an_immutable_digest(profile, monkeypatch):
@@ -301,7 +407,7 @@ def test_a_pool_job_runs_every_task(profile, credential, tmp_path):
     result = plugin.run(project_key=POOL_JOB, credential=credential,
                         bundle_root=str(tmp_path), job_id=JOB_ID, bundle_sha256="c" * 64)
 
-    assert len(calls) == 15, "the pool did not run every task"
+    assert len(_agent_create_calls(calls)) == 15, "the pool did not run every task"
     assert result.report["pool"] == "ai_search:fast"
     assert [task["task_id"] for task in result.report["tasks"]] == [
         f"t{index:03d}" for index in range(15)]
@@ -388,7 +494,9 @@ def test_one_capability_covers_the_whole_pool_and_dies_with_it(profile, credenti
     plugin.run(project_key=POOL_JOB, credential=credential, bundle_root=str(tmp_path),
                job_id=JOB_ID, bundle_sha256="c" * 64)
 
-    tokens = {_env_of(argv)["SN22_BROKER_CAPABILITY"] for argv in calls}
+    tokens = {
+        _env_of(argv)["SN22_BROKER_CAPABILITY"] for argv in _agent_create_calls(calls)
+    }
     assert len(tokens) == 1, "a capability was minted per task"
     with pytest.raises(BrokerDenied):
         plugin.broker.dispatch(tokens.pop(), "web-search", {"query": "x"}, over_http=True)
