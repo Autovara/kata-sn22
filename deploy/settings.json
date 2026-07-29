@@ -37,7 +37,11 @@
     "(see REQUIRED_OPERATOR_ENV). Putting placeholders here instead would ship a file that looks",
     "configured and is not.",
     "",
-    "round_gap_sec is 60, the installer's floor -- not a cost decision. It is the idle gap AFTER a round ends, and a round with no pending PR exits in about a second, so this is how long a miner's PR can sit unnoticed. Challenges are timer-driven only: the webhook does intake, screening and queueing, and never starts a duel. At the previous 900 a submission could wait a quarter of an hour with the lane reporting itself healthy and idle."
+    "round_gap_sec is 60, the installer's floor -- not a cost decision. It is the idle gap AFTER a round ends, and a round with no pending PR exits in about a second, so this is how long a miner's PR can sit unnoticed. Challenges are timer-driven only: the webhook does intake, screening and queueing, and never starts a duel. At the previous 900 a submission could wait a quarter of an hour with the lane reporting itself healthy and idle.",
+    "",
+    "submission_policy is THIS SUBNET's answer to a question the competition repository's PR gate has to ask: may a submission reach the network itself? Declared here because it is a property of this subnet's agent contract, not of the gate.",
+    "",
+    "The gate cannot import this repository -- it runs on a bare Python with no pip install -- so kata-subnets-deploy publishes this into the competition repo as data. See docs/contracts.md."
   ],
   "schema_version": 1,
   "subnet_id": 22,
@@ -54,5 +58,17 @@
     "timeout_start_sec": 3600,
     "round_gap_sec": 60,
     "requires_docker": false
+  },
+  "submission_policy": {
+    "direct_network_allowed": false,
+    "banned_source_markers": [
+      "import socket",
+      "import requests",
+      "import httpx",
+      "urllib.request",
+      "http.client",
+      "import subprocess"
+    ],
+    "banned_source_reason": "sn22__desearch submissions reach providers through the broker capability, never directly, so this module reaches nothing"
   }
 }
