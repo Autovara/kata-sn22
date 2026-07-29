@@ -400,7 +400,54 @@ POOL_JOB = json.dumps({
 })
 
 
-def test_a_pool_job_runs_every_task(profile, credential, tmp_path):
+@pytest.fixture
+def upstream_scoring(monkeypatch):
+    """Replace the one upstream-dependent call these orchestration tests reach.
+
+    ``plugin.run`` scores the pool inside the room, and ``production_scorer.score_pool`` loads the
+    pinned upstream, which needs the real pydantic, numpy, pytz and tiktoken. Those live in the
+    ``upstream`` extra; CI installs ``dev``. So these five failed on every CI run with
+    ``UpstreamUnavailable`` while passing locally -- a developer venv that had once been synced with
+    ``--extra parity`` keeps those packages, and nothing re-checks that they are still declared.
+
+    Skipping them was the obvious fix and the wrong one. They pin room orchestration -- that every
+    task in the pool runs, that results come back in task order, that agent concurrency is bounded,
+    that the room measures ``process_time`` itself, and that one capability covers the whole pool.
+    None of that involves upstream, and the concurrency bound in particular is a property worth
+    checking on every push. Neither CI job could run them either way: the ``parity`` extra omits
+    tiktoken, so an upstream skipif would have skipped them everywhere.
+
+    So the stub is deliberately narrow. Everything else in ``_score`` still runs for real: the typed
+    tasks are built by ``build_task_from_input``, the evaluator capability is minted, and the judge,
+    fetch and rescrape closures are wired to the live broker. Only the scoring call itself is
+    replaced. Scoring has its own coverage in ``test_sn22_production_scorer.py``.
+
+    Yields the recorded calls so a test can assert scoring happened, and happened in the room.
+    """
+    from kata_sn22 import production_scorer
+
+    calls = []
+
+    class _Dict:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def as_dict(self):
+            return dict(self._payload)
+
+    class _Score:
+        king = _Dict({"combined_score": 0.5})
+        credentials = _Dict({"scrapingdog": "ok"})
+
+    async def _score_pool(**kwargs):
+        calls.append(kwargs)
+        return _Score()
+
+    monkeypatch.setattr(production_scorer, "score_pool", _score_pool)
+    return calls
+
+
+def test_a_pool_job_runs_every_task(profile, credential, tmp_path, upstream_scoring):
     plugin, calls = profile
     (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
 
@@ -413,7 +460,8 @@ def test_a_pool_job_runs_every_task(profile, credential, tmp_path):
         f"t{index:03d}" for index in range(15)]
 
 
-def test_pool_results_come_back_in_task_order_not_completion_order(profile, credential, tmp_path):
+def test_pool_results_come_back_in_task_order_not_completion_order(
+        profile, credential, tmp_path, upstream_scoring):
     """Two contestants' reports have to line up task for task, and a thread pool does not promise
     completion order."""
     import random
@@ -436,7 +484,7 @@ def test_pool_results_come_back_in_task_order_not_completion_order(profile, cred
         f"t{index:03d}" for index in range(15)]
 
 
-def test_task_concurrency_is_bounded(profile, credential, tmp_path):
+def test_task_concurrency_is_bounded(profile, credential, tmp_path, upstream_scoring):
     """Fifteen agent containers at once would contend for the room's memory and CPU, and a
     contestant whose tasks contended with each other would post a worse process_time for a reason
     unrelated to its answers."""
@@ -470,7 +518,8 @@ def test_task_concurrency_is_bounded(profile, credential, tmp_path):
     assert peak <= profile_module.TASK_CONCURRENCY, f"{peak} agents ran at once"
 
 
-def test_the_room_measures_each_task_rather_than_trusting_the_agent(profile, credential, tmp_path):
+def test_the_room_measures_each_task_rather_than_trusting_the_agent(
+        profile, credential, tmp_path, upstream_scoring):
     """``process_time`` drives upstream's performance reward and timeout penalty. An agent that
     reported its own would be grading its own speed."""
     plugin, _calls = profile
@@ -484,7 +533,8 @@ def test_the_room_measures_each_task_rather_than_trusting_the_agent(profile, cre
         assert task["process_time"] >= 0.0
 
 
-def test_one_capability_covers_the_whole_pool_and_dies_with_it(profile, credential, tmp_path):
+def test_one_capability_covers_the_whole_pool_and_dies_with_it(
+        profile, credential, tmp_path, upstream_scoring):
     """Minting one per task would give a contestant fifteen times the allowance."""
     from room.broker import BrokerDenied
 
@@ -519,3 +569,30 @@ def test_a_malformed_pool_job_is_refused(profile, credential, tmp_path, bad):
         plugin.run(project_key=bad, credential=credential, bundle_root=str(tmp_path),
                    job_id=JOB_ID, bundle_sha256="c" * 64)
     assert not calls, "an agent was started for a malformed pool job"
+
+
+def test_the_pool_is_scored_inside_the_room_while_the_capability_lives(
+        profile, credential, tmp_path, upstream_scoring):
+    """``run`` scores between ``open_job`` and ``close_job`` deliberately: the attestation binds the
+    pool tuple, so a tuple computed on the host afterwards would be a number the quote does not
+    cover. Nothing asserted that ordering until the scoring call was made observable.
+    """
+    plugin, _calls = profile
+    (tmp_path / "agent.py").write_text("print('{}')", encoding="utf-8")
+
+    closed = []
+    original_close = plugin._broker.close_job
+
+    def _recording_close(job_id):
+        closed.append(len(upstream_scoring))
+        return original_close(job_id)
+
+    plugin._broker.close_job = _recording_close
+    plugin.run(project_key=POOL_JOB, credential=credential, bundle_root=str(tmp_path),
+               job_id=JOB_ID, bundle_sha256="c" * 64)
+
+    assert len(upstream_scoring) == 1, "the pool was not scored"
+    assert closed == [1], "the job was closed before the pool was scored"
+    # And it scored THIS pool, not an empty one.
+    assert upstream_scoring[0]["pool"] == "ai_search:fast"
+    assert len(upstream_scoring[0]["tasks"]) == 15
