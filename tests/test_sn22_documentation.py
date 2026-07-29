@@ -25,7 +25,6 @@ BOT = REPO.parent / "kata-bot"
 README = REPO / "README.md"
 OPERATOR_GUIDE = REPO / "SN22-OPERATOR-GUIDE.md"
 PROTOCOL = KATA / "docs" / "SN22-PROTOCOL.md"
-SUBMISSIONS = KATA / "submissions" / "README.md"
 ENV_EXAMPLE = BOT / ".env.example"
 
 
