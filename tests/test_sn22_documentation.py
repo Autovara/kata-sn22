@@ -24,14 +24,26 @@ BOT = REPO.parent / "kata-bot"
 
 README = REPO / "README.md"
 OPERATOR_GUIDE = REPO / "SN22-OPERATOR-GUIDE.md"
-#: This lane's wire protocol. It lived in `kata/docs/` until the engine repo was made
-#: subnet-agnostic; a subnet's own protocol is the subnet's to document.
-PROTOCOL = REPO / "docs" / "SN22-PROTOCOL.md"
+#: This lane's wire protocol. It lived in `kata/docs/`, then in this repo's `docs/`, and is now a
+#: section of the README -- this repository keeps all its prose in one file.
+PROTOCOL = README
 ENV_EXAMPLE = BOT / ".env.example"
 
 
 def _text(path: Path) -> str:
+    """Read a document, skipping ONLY for one that belongs to another repository.
+
+    A missing file used to skip unconditionally. When the protocol moved out of `docs/`, that
+    turned 22 of these gates into silent skips: every documentation contract stopped being checked
+    and the suite stayed green. A document this repository owns must fail when it is absent, or the
+    gate is decoration.
+    """
     if not path.is_file():
+        if REPO in path.parents:
+            raise AssertionError(
+                f"{path} is missing. This repository owns that document, so its absence is a "
+                f"failure rather than a reason to skip these gates"
+            )
         pytest.skip(f"{path} is not checked out beside this repository")
     return path.read_text(encoding="utf-8")
 
@@ -40,7 +52,7 @@ def _text(path: Path) -> str:
 DOCUMENTS = {
     "kata-sn22/README.md": README,
     "kata-sn22/SN22-OPERATOR-GUIDE.md": OPERATOR_GUIDE,
-    "docs/SN22-PROTOCOL.md": PROTOCOL,
+
 }
 
 
@@ -109,7 +121,7 @@ def test_the_bot_env_example_offers_no_sn22_provider_key():
 
 MINER_FACTS = {
     "four required credentials": ("scrapingdog", "apify", "openai", "chutes"),
-    "the exact sealing command": ("kata_seal_multi.py", "--credential-profile", "--providers"),
+    "the exact sealing command": ("kata_seal.py", "--credential-profile", "--providers"),
     "why the agent image exists": ("no package installer", "kata_sn22_sdk"),
     "all four task pools": ("ai_search:fast", "ai_search:balanced", "ai_search:deep", "x_search"),
     "a bad key means zero": ("scores you ZERO",),
