@@ -153,7 +153,11 @@ def test_the_operator_guide_states_every_fact_an_operator_needs(fact):
 def test_the_documented_sealing_flags_are_the_ones_the_tool_accepts():
     """A documented flag the tool does not have is a miner stuck at the one step where they are
     handling real credentials."""
-    sealer = REPO.parent / "kata-tee-runner" / "kata_seal_multi.py"
+    # Single-key and multi-key sealing were merged into one tool; this used to point at
+    # `kata_seal_multi.py`. Note the failure mode that would have caused: the guard below skips
+    # when kata-tee-runner is absent, so a stale filename would have turned this contract check
+    # into a permanent silent skip rather than a failure.
+    sealer = REPO.parent / "kata-tee-runner" / "kata_seal.py"
     if not sealer.is_file():
         pytest.skip("kata-tee-runner is not checked out beside this repository")
 
@@ -168,7 +172,7 @@ def test_the_documented_sealing_flags_are_the_ones_the_tool_accepts():
     uv_flags = {"--extra", "--with", "--python", "--directory", "--no-project", "--"}
     for flag in sorted(documented - uv_flags):
         assert f'"{flag}"' in source, (
-            f"the protocol documents {flag}, which kata_seal_multi.py does not accept")
+            f"the protocol documents {flag}, which kata_seal.py does not accept")
 
 
 def test_the_documented_snapshot_command_matches_the_tool():
