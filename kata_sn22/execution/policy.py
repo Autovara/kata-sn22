@@ -18,26 +18,23 @@ has to *say*, and the choice travels into the challenge result so no run is ambi
 
 from __future__ import annotations
 
-import os
+from kata.core.execution_backend import ExecutionBackendPolicy
 
 EXECUTION_BACKEND_ENV = "KATA_SN22_EXECUTION_BACKEND"
 _BACKENDS = frozenset({"tee", "sandbox"})
 
+#: The rule itself lives in core, subnet-neutral. SN22 supplies only what is genuinely its own:
+#: the variable name, the permitted values, and which one is safe when nothing is configured.
+#:
+#: This replaced a byte-identical copy of the same logic in the other subnet. A fix to one -- for
+#: instance tightening what counts as an acceptable value -- silently did not reach the other.
+_POLICY = ExecutionBackendPolicy(EXECUTION_BACKEND_ENV, _BACKENDS, "tee")
+
 
 def resolve_execution_backend() -> str:
     """Return ``tee`` by default, or an explicitly selected development backend."""
-    configured = os.environ.get(EXECUTION_BACKEND_ENV, "").strip().lower()
-    if configured:
-        if configured not in _BACKENDS:
-            # Fail closed on a typo rather than silently defaulting: a misspelled backend that fell
-            # back to "tee" would be harmless, but one that fell back to "sandbox" would run an
-            # untrusted agent outside the room while the deployment believed otherwise.
-            raise ValueError(
-                f"{EXECUTION_BACKEND_ENV} must be one of: {', '.join(sorted(_BACKENDS))}."
-            )
-        return configured
-    return "tee"
+    return _POLICY.resolve()
 
 
 def tee_execution_enabled() -> bool:
-    return resolve_execution_backend() == "tee"
+    return _POLICY.is_selected("tee")
